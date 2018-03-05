@@ -7,8 +7,6 @@
 
 #define EPS     0.1f
 
-#define DBG_IDX -1
-
 #include <vector_functions.h>
 #include <helper_math.h>
 

@@ -64,7 +64,7 @@ void city_scene(camera **cam, voxelModel** model, float aspect) {
 	}
 
 	*model = new voxelModel(data, image_x, image_y);
-	*cam = new camera(make_float3(1400), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
+	*cam = new camera(make_float3(700), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 }
 
 void call_from_thread(renderer& r, const uint unit_idx) {
@@ -77,7 +77,6 @@ void write_image(uint nx, uint ny, const renderer& r) {
 	for (int y = ny - 1; y >= 0; y--) {
 		for (int x = 0; x < nx; x++) {
 			const float3 col = r.get_pixel_color(x, y);
-			if (idx == DBG_IDX) printf("pixel_color(%f, %f, %f)\n", col.x, col.y, col.z);
 			data[idx++] = min(255, int(255.99*col.x));
 			data[idx++] = min(255, int(255.99*col.y));
 			data[idx++] = min(255, int(255.99*col.z));
@@ -150,7 +149,7 @@ int main(int argc, char** argv)
 	const uint num_threads = 1;
 	const int nx = 500;
 	const int ny = 500;
-	const int ns = 10;
+	const int ns = 500;
 	const uint max_depth = 50;
 
 	camera *cam;

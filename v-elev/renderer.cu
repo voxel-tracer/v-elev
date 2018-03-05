@@ -122,7 +122,7 @@ __global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned c
 	const ray *r = &(rays[i]);
 	const voxelModel model(heightmap, model_size);
 	cu_hit hit;
-	if (!model.hit(*r, t_min, t_max, hit, i == DBG_IDX)) {
+	if (!model.hit(*r, t_min, t_max, hit)) {
 		hits[i].hit_face = NO_HIT;
 		return;
 	}
@@ -140,7 +140,6 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	clr_rec& crec = clrs[ray_idx];
 
 	if (hit.hit_face == NO_HIT) {
-		if (ray_idx == DBG_IDX) printf("color NO_HIT\n");
 		// no intersection with spheres, return sky color
 		float3 unit_direction = normalize(r.direction);
 		float t = 0.5*(unit_direction.y + 1.0);
@@ -154,7 +153,6 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 		-1 * (hit.hit_face == Y)*signum(r.direction.y),
 		-1 * (hit.hit_face == Z)*signum(r.direction.z)
 	);
-	if (ray_idx == DBG_IDX) printf("face = %d, hit_n(%f, %f, %f)\n",hit.hit_face, hit_n.x, hit_n.y, hit_n.z);
 
 	hit_record rec(r.point_at_parameter(hit.hit_t), hit_n);
 	curandStatePhilox4_32_10_t localState;
@@ -162,10 +160,6 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 
 	scatter_record srec;
 	if (scatter_lambertian(albedo, rec, &localState, srec)) {
-		if (ray_idx == DBG_IDX) printf("scatter(%f, %f, %f), attenuation(%f, %f, %f)\n",
-			srec.scattered.direction.x, srec.scattered.direction.y, srec.scattered.direction.z,
-			srec.attenuation.x, srec.attenuation.y, srec.attenuation.z);
-
 		crec.origin = srec.scattered.origin;
 		crec.direction = srec.scattered.direction;
 		crec.color = srec.attenuation;
@@ -226,8 +220,6 @@ void renderer::compact_rays(work_unit* wu) {
 		sample& s = wu->samples[i];
 		const uint local_pixelId = s.pixelId - wu->start_idx;
 		s.done = crec.done || s.depth == max_depth;
-		if (s.pixelId == DBG_IDX) printf("done= %d, depth= %d, not_absorbed(%f, %f, %f), color(%f, %f, %f)\n", crec.done, s.depth, 
-			s.not_absorbed.x, s.not_absorbed.y, s.not_absorbed.z, crec.color.x, crec.color.y, crec.color.z);
 		if (s.done) {
 			if (crec.done) wu->h_colors[local_pixelId] += s.not_absorbed*crec.color;
 			++(wu->pixels[local_pixelId].done);

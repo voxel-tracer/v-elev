@@ -78,35 +78,28 @@ struct voxelModel {
 		return true;
 	}
 
-	__device__ bool hit(const ray& r, float t_min, float t_max, cu_hit& hit, const bool dbg) const {
+	__device__ bool hit(const ray& r, float t_min, float t_max, cu_hit& hit) const {
 		float3u hit_min, hit_max;
 		hit_min.v = make_float3(t_min);
 		hit_max.v = make_float3(t_max);
 		if (!hitDist(r, hit_min.v, hit_max.v) || min(hit_max.v) < t_min) {
-			if (dbg) printf("NO_HIT\n");
 			return false;
 		}
 
 		float3u d; d.v = r.direction; //TODO make ray.direction float3u
 		int3u d_sign;
 		d_sign.v = make_int3(signum(d.v.x), signum(d.v.y), signum(d.v.z));
-		if (dbg) printf("direction(%f, %f, %f), d(%f, %f, %f), d_sign(%d, %d, %d)\n", 
-			r.direction.x, r.direction.y, r.direction.z, 
-			d.v.x, d.v.y, d.v.z, 
-			d_sign.v.x, d_sign.v.y, d_sign.v.z);
 
 		// find which face was hit
 		int face = max_id(hit_min.v);
 		float minT = hit_min.a[face]; // t at intersection
 		float3 h_vec = r.point_at_parameter(minT); // intersected point
-		if (dbg) printf("minT %f, h_vec (%f, %f, %f)\n", minT, h_vec.x, h_vec.y, h_vec.z);
 		int3u voxel;
 		voxel.v = make_int3(
 			h_vec.x + d_sign.v.x*EPS,
 			h_vec.y + d_sign.v.y*EPS,
 			h_vec.z + d_sign.v.z*EPS
 		); // intersected voxel
-		if (dbg) printf("start (%d, %d, %d)\n", voxel.v.x, voxel.v.y, voxel.v.z);
 
 		// compute tVec: how much we need to travel in each axis to hit next voxel
 		// next_voxel = voxel + step (+1 if step < 0)
@@ -119,13 +112,11 @@ struct voxelModel {
 			(d_sign.v.y == 0 ? FLT_MAX : (voxel.v.y + (d_sign.v.y > 0 ? 1:0) - r.origin.y) / d.v.y),
 			(d_sign.v.z == 0 ? FLT_MAX : (voxel.v.z + (d_sign.v.z > 0 ? 1:0) - r.origin.z) / d.v.z)
 		);
-		if (dbg) printf("      t_vec(%f, %f, %f)\n", tVec.v.x, tVec.v.y, tVec.v.z);
 
 		// compute tDelta: how much we need to travel in each axis to move from one voxel to another
 		// final Vec3 tDelta = rD.abs().div(gridSize).inv();
 		float3u tDelta;
 		tDelta.v = 1 / fabs(d.v);
-		if (dbg) printf("      t_delta(%f, %f, %f)\n", tDelta.v.x, tDelta.v.y, tDelta.v.z);
 
 		// remember tVec.get(face) is the intersection with the next voxel
 		// substract tDelta[face] to get the intersection with current voxel
@@ -134,18 +125,15 @@ struct voxelModel {
 			face = min_id(tVec.v);
 			voxel.a[face] += d_sign.a[face];
 			tVec.a[face] += tDelta.a[face];
-			if (dbg) printf("      (%d, %d, %d), (%f, %f, %f): %d\n", voxel.v.x, voxel.v.y, voxel.v.z, tVec.v.x, tVec.v.y, tVec.v.z, face);
 		}
 
 		if (!isVoxelFull(voxel.v)) {
-			if (dbg) printf("NO_HIT\n");
 			return false;
 		}
 
 		//COMPUTE HIT RECORD
 		hit.hit_t = tVec.a[face] - tDelta.a[face];
 		hit.hit_face = face + 1;
-		if (dbg) printf("HIT\n");
 		return true;
 	}
 
