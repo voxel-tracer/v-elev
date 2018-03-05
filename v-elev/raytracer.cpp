@@ -16,6 +16,8 @@
 #include "utils.h"
 #include "material.h"
 
+#include "sdl.h"
+
 using namespace std;
 
 void test_scene0(camera **cam, voxelModel **model, float aspect) {
@@ -69,12 +71,81 @@ void call_from_thread(renderer& r, const uint unit_idx) {
 	r.render_work_unit(unit_idx);
 }
 
+void write_image(uint nx, uint ny, const renderer& r) {
+	char *data = new char[nx*ny * 3];
+	int idx = 0;
+	for (int y = ny - 1; y >= 0; y--) {
+		for (int x = 0; x < nx; x++) {
+			const float3 col = r.get_pixel_color(x, y);
+			if (idx == DBG_IDX) printf("pixel_color(%f, %f, %f)\n", col.x, col.y, col.z);
+			data[idx++] = min(255, int(255.99*col.x));
+			data[idx++] = min(255, int(255.99*col.y));
+			data[idx++] = min(255, int(255.99*col.z));
+		}
+	}
+	stbi_write_png("picture.png", nx, ny, 3, (void*)data, nx * 3);
+	delete[] data;
+}
+
+void display_image(uint nx, uint ny, const renderer& r) {
+	uint *pixels = new uint[nx*ny];
+
+	// copy pixels from RGB to ARGB
+	for (int y = ny - 1, idx = 0; y >= 0; y--) {
+		for (int x = 0; x < nx; x++, idx++) {
+			const float3 col = r.get_pixel_color(x, y);
+			unsigned char red = min(255, int(255.99*col.x));
+			unsigned char green = min(255, int(255.99*col.y));
+			unsigned char blue = min(255, int(255.99*col.z));
+			pixels[idx] = (red << 16) + (green << 8) + blue;
+		}
+	}
+
+	// display the pixels in a window
+	SDL_Window *win = NULL;
+	SDL_Renderer *renderer = NULL;
+	SDL_Texture *img = NULL;
+
+	// Initialize SDL.
+	if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+		delete[] pixels;
+		return;
+	}
+
+	win = SDL_CreateWindow("Image Loading", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, nx, ny, 0);
+	renderer = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+	img = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, nx, ny);
+	SDL_UpdateTexture(img, NULL, pixels, nx * sizeof(uint));
+	SDL_RenderCopy(renderer, img, NULL, NULL);
+	SDL_RenderPresent(renderer);
+
+	// wait until the window is closed
+	SDL_Event event;
+	bool quit = false;
+	while (!quit && SDL_WaitEvent(&event)) {
+		switch (event.type) {
+		case SDL_QUIT:
+			quit = true;
+			break;
+		}
+	}
+
+	// free all resources
+	SDL_DestroyTexture(img);
+	SDL_DestroyRenderer(renderer);
+	SDL_DestroyWindow(win);
+
+	delete[] pixels;
+	SDL_Quit();
+}
+
 /**
  * Host main routine
  */
 int main(int argc, char** argv)
 {
-	bool write_image = true;
+	bool writeImage = true;
+	bool showImage = true;
 
 	const uint num_threads = 1;
 	const int nx = 500;
@@ -113,22 +184,10 @@ int main(int argc, char** argv)
 			", gpu: " << wu_gpu / CLOCKS_PER_SEC << "(" << wu_gpu / wu->num_iter << ")" << endl;
 	}
 
-	if (write_image) {
-		// generate final image
-		char *data = new char[nx*ny * 3];
-		int idx = 0;
-		for (int y = ny-1; y >= 0; y--) {
-			for (int x = 0; x < nx; x++) {
-				float3 col = r.get_pixel_color(x, y);
-				if (idx == DBG_IDX) printf("pixel_color(%f, %f, %f)\n", col.x, col.y, col.z);
-				data[idx++] = min(255, int(255.99*col.x));
-				data[idx++] = min(255, int(255.99*col.y));
-				data[idx++] = min(255, int(255.99*col.z));
-			}
-		}
-		stbi_write_png("picture.png", nx, ny, 3, (void*)data, nx * 3);
-		delete[] data;
-	}
+	if (writeImage)
+		write_image(nx, ny, r);
+	if (showImage)
+		display_image(nx, ny, r);
 	
 	r.destroy();
 
