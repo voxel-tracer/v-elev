@@ -18,7 +18,36 @@
 
 #include "sdl.h"
 
+#include "argh.h"
+
 using namespace std;
+
+struct options {
+	std::string highmap_file;
+	std::string output_file;
+	bool show_image = false;
+	uint num_threads = 1;
+	uint nx = 500;
+	uint ny = 500;
+	uint ns = 1;
+	uint max_depth = 50;
+};
+
+bool parse_args(options& o, int argc, char** argv) {
+	argh::parser cmdl(argv);
+	if (!cmdl(1)) {
+		std::cerr << "missing highmap file" << std::endl;
+		return false;
+	}
+	cmdl(1) >> o.highmap_file;
+	cmdl({ "o", "output" }, "") >> o.output_file;
+	cmdl({ "nt", "num_threads" }, o.num_threads) >> o.num_threads;
+	cmdl({ "nx", "width" }, o.nx) >> o.nx;
+	cmdl({ "ny", "height" }, o.ny) >> o.ny;
+	cmdl({ "ns", "num_samples" }, o.ns) >> o.ns;
+	cmdl({ "md", "max_depth" }, o.max_depth) >> o.max_depth;
+	o.show_image = cmdl["show_image"];
+}
 
 void test_scene0(camera **cam, voxelModel **model, float aspect) {
 	const uint scene_size = 10;
@@ -53,11 +82,11 @@ void test_scene1(camera **cam, voxelModel **model, float aspect) {
 	*cam = new camera(make_float3(10), make_float3(1.5, 0.5, 1.5), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 }
 
-void city_scene(camera **cam, voxelModel** model, float aspect) {
+void city_scene(const char *highmap_file, camera **cam, voxelModel** model, float aspect) {
 	// load heightmap image
 	int image_x, image_y, image_n;
 	int image_desired_channels = 1; // grayscale
-	unsigned char *data = stbi_load("city512.png", &image_x, &image_y, &image_n, image_desired_channels);
+	unsigned char *data = stbi_load(highmap_file, &image_x, &image_y, &image_n, image_desired_channels);
 	if (data == NULL) {
 		*model = NULL;
 		return;
@@ -71,7 +100,7 @@ void call_from_thread(renderer& r, const uint unit_idx) {
 	r.render_work_unit(unit_idx);
 }
 
-void write_image(uint nx, uint ny, const renderer& r) {
+void write_image(const char* output_file, uint nx, uint ny, const renderer& r) {
 	char *data = new char[nx*ny * 3];
 	int idx = 0;
 	for (int y = ny - 1; y >= 0; y--) {
@@ -82,7 +111,7 @@ void write_image(uint nx, uint ny, const renderer& r) {
 			data[idx++] = min(255, int(255.99*col.z));
 		}
 	}
-	stbi_write_png("picture.png", nx, ny, 3, (void*)data, nx * 3);
+	stbi_write_png(output_file, nx, ny, 3, (void*)data, nx * 3);
 	delete[] data;
 }
 
@@ -143,18 +172,23 @@ void display_image(uint nx, uint ny, const renderer& r) {
  */
 int main(int argc, char** argv)
 {
-	bool writeImage = true;
-	bool showImage = true;
+	options o;
+	if (!parse_args(o, argc, argv))
+		return 1;
 
-	const uint num_threads = 1;
-	const int nx = 500;
-	const int ny = 500;
-	const int ns = 500;
-	const uint max_depth = 50;
+
+	bool writeImage = o.output_file.length() > 0;
+	bool showImage = o.show_image;
+
+	const uint num_threads = o.num_threads;
+	const int nx = o.nx;
+	const int ny = o.ny;
+	const int ns = o.ns;
+	const uint max_depth = o.max_depth;
 
 	camera *cam;
 	voxelModel *model;
-	city_scene(&cam, &model, float(nx) / float(ny));
+	city_scene(o.highmap_file.c_str(), &cam, &model, float(nx) / float(ny));
 	if (model == NULL) {
 		cerr << "couldn't load image" << endl;
 		return 1;
@@ -166,7 +200,7 @@ int main(int argc, char** argv)
 	r.prepare_kernel();
 
 	clock_t begin = clock();
-	thread t[num_threads];
+	thread *t = new thread[o.num_threads];
 	// launch a group of threads 
 	for (uint i = 0; i < num_threads; i++)
 		t[i] = thread(call_from_thread, ref(r), i);
@@ -184,13 +218,14 @@ int main(int argc, char** argv)
 	}
 
 	if (writeImage)
-		write_image(nx, ny, r);
+		write_image(o.output_file.c_str(), nx, ny, r);
 	if (showImage)
 		display_image(nx, ny, r);
 	
 	r.destroy();
 
 	stbi_image_free((void*) (model->heightmap));
+	delete[] t;
 	//delete[] model->heightmap;
 
     return 0;
