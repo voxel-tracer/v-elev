@@ -81,7 +81,7 @@ void test_scene1(camera **cam, voxelModel **model, float aspect) {
 	*cam = new camera(make_float3(10), make_float3(1.5, 0.5, 1.5), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 }
 
-void city_scene(const char *highmap_file, camera **cam, voxelModel** model, float aspect) {
+void city_scene(const char *highmap_file, camera **cam, sun **s, voxelModel** model, float aspect) {
 	// load heightmap image
 	int image_x, image_y, image_n;
 	int image_desired_channels = 1; // grayscale
@@ -91,8 +91,9 @@ void city_scene(const char *highmap_file, camera **cam, voxelModel** model, floa
 		return;
 	}
 
+	*s = new sun(make_float3(700, 1400, 1400), 200, make_float3(50));
 	*model = new voxelModel(data, image_x, image_y);
-	*cam = new camera(make_float3(700), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
+	*cam = new camera(make_float3(1400), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 }
 
 void call_from_thread(renderer& r, const uint unit_idx) {
@@ -187,7 +188,8 @@ int main(int argc, char** argv)
 
 	camera *cam;
 	voxelModel *model;
-	city_scene(o.highmap_file.c_str(), &cam, &model, float(nx) / float(ny));
+	sun *s;
+	city_scene(o.highmap_file.c_str(), &cam, &s, &model, float(nx) / float(ny));
 	if (model == NULL) {
 		cerr << "couldn't load image" << endl;
 		return 1;
@@ -195,7 +197,7 @@ int main(int argc, char** argv)
 	printf("voxel size (%d, %d, %d)\n", model->size.x, model->size.y, model->size.z);
 
 	const float albedo = .45;
-	renderer r(cam, model, make_float3(albedo), nx, ny, ns, max_depth, 0.001f, num_threads);
+	renderer r(cam, model, make_float3(albedo), *s, nx, ny, ns, max_depth, 0.001f, num_threads);
 	r.prepare_kernel();
 
 	clock_t begin = clock();

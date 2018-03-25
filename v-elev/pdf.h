@@ -2,6 +2,7 @@
 
 #include <limits.h>
 #include "onb.h"
+#include "sun.h"
 
 class pdf {
 public:
@@ -33,10 +34,23 @@ public:
 		return 0.5 * p[0]->value(direction) + 0.5 *p[1]->value(direction);
 	}
 	__device__ virtual float3 generate(seed_t seed) const {
-		if (drand48() < 0.5)
+		if (cu_drand48(seed) < 0.5)
 			return p[0]->generate(seed);
 		else
 			return p[1]->generate(seed);
 	}
 	pdf *p[2];
+};
+
+class sun_pdf : public pdf {
+public:
+	__device__ sun_pdf(const sun *p, const float3& origin) : ptr(p), o(origin) {}
+	__device__ virtual float value(const float3& direction) const {
+		return ptr->pdf_value(o, direction);
+	}
+	__device__ virtual float3 generate(seed_t seed) const {
+		return ptr->random(seed, o);
+	}
+	float3 o;
+	const sun *ptr;
 };

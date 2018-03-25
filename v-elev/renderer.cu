@@ -131,7 +131,8 @@ __global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned c
 	hits[i].hit_t = hit.hit_t;
 }
 
-__global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const int max_depth) {
+__global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s, const int max_depth) {
+
 	const int ray_idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (ray_idx >= num_rays) return;
 
@@ -141,10 +142,17 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 
 	if (hit.hit_face == NO_HIT) {
 		// no intersection with spheres, return sky color
-		float3 unit_direction = normalize(r.direction);
-		float t = 0.5*(unit_direction.y + 1.0);
-		crec.color = 1.0* ((1 - t)*make_float3(1.0, 1.0, 1.0) + t*make_float3(0.5, 0.7, 1.0));
-		crec.done = true;
+		if (s.pdf_value(r.origin, r.direction) > 0) {
+			crec.color = s.clr;
+			crec.done = true;
+		}
+		else {
+			//float3 unit_direction = normalize(r.direction);
+			//float t = 0.5*(unit_direction.y + 1.0);
+			//crec.color = 1.0* ((1 - t)*make_float3(1.0, 1.0, 1.0) + t*make_float3(0.5, 0.7, 1.0));
+			crec.color = make_float3(0);
+			crec.done = true;
+		}
 		return;
 	}
 
@@ -157,12 +165,16 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	hit_record rec(r.point_at_parameter(hit.hit_t), hit_n);
 	curandStatePhilox4_32_10_t localState;
 	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &localState);
-	lambertian mat(albedo);
+	const lambertian mat(albedo);
 
 	scatter_record srec;
 	mat.scatter(rec, srec);
-	srec.scattered = ray(rec.hit_p, srec.pdf_ptr->generate(&localState));
-	const float pdf_val = srec.pdf_ptr->value(srec.scattered.direction);
+
+	sun_pdf plight(&s, rec.hit_p);
+	mixture_pdf p(&plight, srec.pdf_ptr);
+
+	srec.scattered = ray(rec.hit_p, p.generate(&localState));
+	const float pdf_val = p.value(srec.scattered.direction);
 	if (pdf_val > 0) {
 		const float scattering_pdf = mat.scattering_pdf(rec, srec.scattered);
 		srec.attenuation *= scattering_pdf / pdf_val;
@@ -200,7 +212,8 @@ void renderer::start_kernel(const work_unit* wu) {
 	int threadsPerBlock = 128;
 	int blocksPerGrid = (wu->length() + threadsPerBlock - 1) / threadsPerBlock;
 	hit_scene <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), d_heightmap, model->size, 0.1f, FLT_MAX, wu->d_hits);
-	simple_color <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), wu->d_hits, wu->d_clrs, num_runs++, model_albedo, max_depth);
+
+	simple_color <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), wu->d_hits, wu->d_clrs, num_runs++, model_albedo, scene_sun, max_depth);
 }
 
 void renderer::render_work_unit(uint unit_idx) {

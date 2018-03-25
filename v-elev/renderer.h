@@ -4,6 +4,7 @@
 
 #include "camera.h"
 #include "voxel_model.h"
+#include "sun.h"
 
 struct pixel {
 	uint samples = 0;
@@ -38,8 +39,8 @@ struct work_unit {
 
 class renderer {
 public:
-	renderer(const camera* _cam, const voxelModel* vm, const float3& albedo, uint _nx, uint _ny, uint _ns, uint _max_depth, float _min_attenuation, uint nunits):
-		cam(_cam), model(vm), model_albedo(albedo), nx(_nx), ny(_ny), ns(_ns), max_depth(_max_depth), min_attenuation(_min_attenuation), num_units(nunits) {}
+	renderer(const camera* _cam, const voxelModel* vm, const float3& albedo, const sun& s, uint _nx, uint _ny, uint _ns, uint _max_depth, float _min_attenuation, uint nunits):
+		cam(_cam), model(vm), model_albedo(albedo), scene_sun(s), nx(_nx), ny(_ny), ns(_ns), max_depth(_max_depth), min_attenuation(_min_attenuation), num_units(nunits) {}
 
 	uint numpixels() const { return nx*ny; }
 	bool is_not_done() const { return !(wunits[0]->done && wunits[1]->done); }
@@ -75,6 +76,7 @@ public:
 	const camera* const cam;
 	const voxelModel * const model;
 	const float3 model_albedo;
+	const sun scene_sun;
 	const uint nx;
 	const uint ny;
 	const uint ns;
