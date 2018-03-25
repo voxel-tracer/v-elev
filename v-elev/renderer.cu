@@ -157,9 +157,16 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	hit_record rec(r.point_at_parameter(hit.hit_t), hit_n);
 	curandStatePhilox4_32_10_t localState;
 	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &localState);
+	lambertian mat(albedo);
 
 	scatter_record srec;
-	if (scatter_lambertian(albedo, rec, &localState, srec)) {
+	mat.scatter(rec, srec);
+	srec.scattered = ray(rec.hit_p, srec.pdf_ptr->generate(&localState));
+	const float pdf_val = srec.pdf_ptr->value(srec.scattered.direction);
+	if (pdf_val > 0) {
+		const float scattering_pdf = mat.scattering_pdf(rec, srec.scattered);
+		srec.attenuation *= scattering_pdf / pdf_val;
+
 		crec.origin = srec.scattered.origin;
 		crec.direction = srec.scattered.direction;
 		crec.color = srec.attenuation;
@@ -178,6 +185,7 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 		crec.color = make_float3(0, 0, 0);
 		crec.done = true;
 	}
+	delete srec.pdf_ptr;
 }
 
 void renderer::copy_rays_to_gpu(const work_unit* wu) {

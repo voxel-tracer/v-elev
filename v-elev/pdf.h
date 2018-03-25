@@ -3,11 +3,40 @@
 #include <limits.h>
 #include "onb.h"
 
-struct cosine_pdf {
-	__device__ cosine_pdf(const float3& w): uvw(w) {}
+class pdf {
+public:
+	__device__ virtual float value(const float3& direction) const = 0;
+	__device__ virtual float3 generate(seed_t seed) const = 0;
+	__device__ ~pdf() {}
+};
 
-	__device__ float value(const float3& direction) const;
-	__device__ float3 generate(seed_t seed) const;
+class cosine_pdf : public pdf {
+public:
+	__device__ cosine_pdf(const float3& w) { uvw.build_from_w(w); }
+	__device__ virtual float value(const float3& direction) const {
+		float cosine = dot(normalize(direction), uvw.w());
+		if (cosine > 0)
+			return cosine / M_PI;
+		else
+			return 0;
+	}
+	__device__ virtual float3 generate(seed_t seed) const {
+		return uvw.local(random_cosine_direction(seed));
+	}
+	onb uvw;
+};
 
-	const onb uvw;
+class mixture_pdf : public pdf {
+public:
+	__device__ mixture_pdf(pdf *p0, pdf *p1) { p[0] = p0; p[1] = p1; }
+	__device__ virtual float value(const float3& direction) const {
+		return 0.5 * p[0]->value(direction) + 0.5 *p[1]->value(direction);
+	}
+	__device__ virtual float3 generate(seed_t seed) const {
+		if (drand48() < 0.5)
+			return p[0]->generate(seed);
+		else
+			return p[1]->generate(seed);
+	}
+	pdf *p[2];
 };

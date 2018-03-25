@@ -14,7 +14,6 @@
 
 #include "renderer.h"
 #include "utils.h"
-#include "material.h"
 
 #include "sdl.h"
 
@@ -36,7 +35,7 @@ struct options {
 bool parse_args(options& o, int argc, char** argv) {
 	argh::parser cmdl(argv);
 	if (!cmdl(1)) {
-		std::cerr << "missing highmap file" << std::endl;
+		std::cerr << "usage <height-map file> [-o <output-file>] [-nt <num-threads 1>] [-nx <image-width 500>] [-ny <image-height 500>] [-ns <spp 1>] [-md <max-depth 50>] [-show_image]" << std::endl;
 		return false;
 	}
 	cmdl(1) >> o.highmap_file;
@@ -140,7 +139,7 @@ void display_image(uint nx, uint ny, const renderer& r) {
 		return;
 	}
 
-	win = SDL_CreateWindow("Image Loading", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, nx, ny, 0);
+	win = SDL_CreateWindow("voxel elevation", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, nx, ny, 0);
 	renderer = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
 	img = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, nx, ny);
 	SDL_UpdateTexture(img, NULL, pixels, nx * sizeof(uint));

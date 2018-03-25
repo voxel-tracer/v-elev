@@ -164,8 +164,6 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <CudaCompile Include="material.cu" />
-    <CudaCompile Include="pdf.cu" />
     <CudaCompile Include="renderer.cu" />
     <CudaCompile Include="utils.cu" />
   </ItemGroup>
