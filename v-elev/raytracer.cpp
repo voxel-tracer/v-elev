@@ -93,7 +93,7 @@ void city_scene(const char *highmap_file, camera **cam, sun **s, voxelModel** mo
 
 	*s = new sun(make_float3(700, 1400, 1400), 200, make_float3(50));
 	*model = new voxelModel(data, image_x, image_y);
-	*cam = new camera(make_float3(1400), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
+	*cam = new camera(make_float3(700), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 }
 
 void call_from_thread(renderer& r, const uint unit_idx) {
@@ -208,15 +208,20 @@ int main(int argc, char** argv)
 	// join the threads with the main thread
 	for (uint i = 0; i < num_threads; i++)
 		t[i].join();
-	cout << "total execution took " << double(clock() - begin) / CLOCKS_PER_SEC << endl;
+	const uint total_exec_time = double(clock() - begin) / CLOCKS_PER_SEC;
+	cout << "total execution took " << total_exec_time << endl;
+	uint total_rays = 0;
 	for (uint i = 0; i < num_threads; i++) {
 		const work_unit * wu = r.get_wunit(i);
+		total_rays += wu->total_rays();
 		const double wu_cpu = double(wu->cpu_time);
 		const double wu_gpu = double(wu->gpu_time);
 		cout << "thread: " << i << " " << wu->num_iter << 
 			" iterations, cpu: " << wu_cpu / CLOCKS_PER_SEC << " (" << wu_cpu / wu->num_iter << ")"
 			", gpu: " << wu_gpu / CLOCKS_PER_SEC << "(" << wu_gpu / wu->num_iter << ")" << endl;
 	}
+
+	cout << "performance: " << (total_rays / total_exec_time) << endl;
 
 	if (writeImage)
 		write_image(o.output_file.c_str(), nx, ny, r);

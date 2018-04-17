@@ -35,6 +35,7 @@ struct work_unit {
 
 	work_unit(uint start, uint end) :start_idx(start), end_idx(end) {}
 	uint length() const { return end_idx - start_idx; }
+	uint total_rays() const { return num_iter*length(); }
 };
 
 class renderer {
