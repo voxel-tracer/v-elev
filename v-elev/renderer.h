@@ -1,10 +1,14 @@
 #pragma once
 
 #include <ctime>
+#include <fstream>
+#include <iostream>
 
 #include "camera.h"
 #include "voxel_model.h"
 #include "sun.h"
+
+#define DBG_FILE
 
 struct pixel {
 	uint samples = 0;
@@ -20,6 +24,9 @@ struct work_unit {
 	const uint end_idx;
 	ray* h_rays;
 	ray* d_rays;
+#ifdef DBG_FILE
+	cu_hit* h_hits;
+#endif
 	cu_hit* d_hits;
 	clr_rec* h_clrs;
 	clr_rec* d_clrs;
@@ -41,7 +48,12 @@ struct work_unit {
 class renderer {
 public:
 	renderer(const camera* _cam, const voxelModel* vm, const float3& albedo, const sun& s, uint _nx, uint _ny, uint _ns, uint _max_depth, float _min_attenuation, uint nunits):
-		cam(_cam), model(vm), model_albedo(albedo), scene_sun(s), nx(_nx), ny(_ny), ns(_ns), max_depth(_max_depth), min_attenuation(_min_attenuation), num_units(nunits) {}
+		cam(_cam), model(vm), model_albedo(albedo), scene_sun(s), nx(_nx), ny(_ny), ns(_ns), max_depth(_max_depth), min_attenuation(_min_attenuation), num_units(nunits) {
+#ifdef DBG_FILE
+		output_file = new std::ofstream("render.dat", std::ios::binary);
+#endif // DBG_FILE
+	}
+	~renderer();
 
 	uint numpixels() const { return nx*ny; }
 	bool is_not_done() const { return !(wunits[0]->done && wunits[1]->done); }
@@ -71,9 +83,6 @@ public:
 	void generate_rays();
 	
 	void render_work_unit(uint unit_idx);
-
-	void destroy();
-
 	const camera* const cam;
 	const voxelModel * const model;
 	const float3 model_albedo;
@@ -104,4 +113,7 @@ private:
 	uint next_pixel = 0;
 	int remaining_pixels = 0;
 	uint num_runs = 0;
+#ifdef DBG_FILE
+	std::ofstream *output_file;
+#endif // DBG_FILE
 };

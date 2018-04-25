@@ -65,6 +65,10 @@ void renderer::prepare_kernel() {
 
 		err(cudaMallocHost(&wu->h_rays, unit_len * sizeof(ray)), "allocate h_rays");
 		err(cudaMalloc((void **)&(wu->d_rays), unit_len * sizeof(ray)), "allocate device d_rays");
+#ifdef DBG_FILE
+		err(cudaMallocHost(&wu->h_hits, unit_len * sizeof(cu_hit)), "allocate h_hits");
+		output_file->write((char*)&unit_len, sizeof(uint));
+#endif // DBG_FILE
 		err(cudaMalloc((void **)&(wu->d_hits), unit_len * sizeof(cu_hit)), "allocate device d_hits");
 		err(cudaMallocHost(&(wu->h_clrs), unit_len * sizeof(clr_rec)), "allocate h_clrs");
 		err(cudaMalloc((void **)&(wu->d_clrs), unit_len * sizeof(clr_rec)), "allocate device d_clrs");
@@ -211,8 +215,14 @@ void renderer::copy_colors_from_gpu(const work_unit* wu) {
 void renderer::start_kernel(const work_unit* wu) {
 	int threadsPerBlock = 128;
 	int blocksPerGrid = (wu->length() + threadsPerBlock - 1) / threadsPerBlock;
+#ifdef DBG_FILE
+	output_file->write((char*)wu->h_rays, wu->length() * sizeof(ray));
+#endif // DBG_FILE
 	hit_scene <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), d_heightmap, model->size, 0.1f, FLT_MAX, wu->d_hits);
-
+#ifdef DBG_FILE
+	err(cudaMemcpyAsync(wu->h_hits, wu->d_hits, wu->length() * sizeof(cu_hit), cudaMemcpyDeviceToHost, wu->stream), "copy hits from device to host");
+	output_file->write((char*)wu->h_hits, wu->length() * sizeof(cu_hit));
+#endif // DBG_FILE
 	simple_color <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), wu->d_hits, wu->d_clrs, num_runs++, model_albedo, scene_sun, max_depth);
 }
 
@@ -278,7 +288,7 @@ void renderer::compact_rays(work_unit* wu) {
 	wu->done = !not_done;
 }
 
-void renderer::destroy() {
+renderer::~renderer() {
 	// Free device global memory
 	err(cudaFree(d_heightmap), "free device d_heightmap");
 
@@ -292,6 +302,9 @@ void renderer::destroy() {
 
 		cudaFreeHost(wu->h_clrs);
 		cudaFreeHost(wu->h_rays);
+#ifdef DBG_FILE
+		cudaFreeHost(wu->h_hits);
+#endif // DBG_FILE
 
 		delete[] wu->pixel_idx;
 		delete[] wu->samples;
@@ -301,4 +314,8 @@ void renderer::destroy() {
 
 	// Free host memory
 	delete[] wunits;
+
+#ifdef DBG_FILE
+	output_file->close();
+#endif // DBG_FILE
 }

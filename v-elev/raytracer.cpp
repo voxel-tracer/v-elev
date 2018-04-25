@@ -227,8 +227,6 @@ int main(int argc, char** argv)
 		write_image(o.output_file.c_str(), nx, ny, r);
 	if (showImage)
 		display_image(nx, ny, r);
-	
-	r.destroy();
 
 	stbi_image_free((void*) (model->heightmap));
 	delete[] t;
