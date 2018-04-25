@@ -10,9 +10,24 @@
 #include <vector_functions.h>
 #include <helper_math.h>
 
-#include <curand_kernel.h>
+//#define seed_t uint&
+//__device__ uint XorShift32(uint& state) {
+//	uint x = state;
+//	x ^= x << 13;
+//	x ^= x >> 17;
+//	x ^= x << 15;
+//	state = x;
+//	return x;
+//}
+//__device__ float RandomFloat01(uint& state) {
+//	return (XorShift32(state) & 0xFFFFFF) / 16777216.0f;
+//}
 
+#include <curand_kernel.h>
 #define seed_t curandStatePhilox4_32_10_t*
+__device__ float RandomFloat01(seed_t seed) {
+	return curand_uniform(seed);
+}
 
 typedef union {
 	float3 v;
@@ -37,47 +52,34 @@ struct cu_hit {
 	__device__ cu_hit(const cu_hit& h) : hit_t(h.hit_t), hit_face(h.hit_face) {}
 };
 
-// Compute a pseudorandom integer.
-// Output value in range [0, 1]
-float drand48(uint &seed) {
-	seed = (214013 * seed + 2531011);
-	return (float)((seed >> 16) & 0x7FFF) / 32767;
-}
-float3 random_in_unit_disk(uint &seed) {
-	float3 p;
-	do {
-		p = 2.0*make_float3(drand48(seed), drand48(seed), 0) - make_float3(1, 1, 0);
-	} while (dot(p, p) >= 1.0);
-	return p;
-}
-__device__ float cu_drand48(seed_t seed) {
-	return curand_uniform(seed);
-}
 __device__ float3 random_cosine_direction(seed_t seed) {
-	float r1 = cu_drand48(seed);
-	float r2 = cu_drand48(seed);
+	float r1 = RandomFloat01(seed);
+	float r2 = RandomFloat01(seed);
 	float z = sqrtf(1 - r2);
 	float phi = 2 * M_PI*r1;
 	float x = cosf(phi) * 2 * sqrtf(r2);
 	float y = sinf(phi) * 2 * sqrtf(r2);
 	return make_float3(x, y, z);
 }
+
 __device__ float3 random_to_sphere(seed_t seed) {
 	float3 p;
 	do {
-		p = 2.0*make_float3(cu_drand48(seed), cu_drand48(seed), cu_drand48(seed)) - make_float3(1, 1, 1);
+		p = 2.0*make_float3(RandomFloat01(seed), RandomFloat01(seed), RandomFloat01(seed)) - make_float3(1, 1, 1);
 	} while (dot(p, p) >= 1.0);
 	return normalize(p);
 }
+
 __device__ float3 random_to_sphere(seed_t seed, float radius, float distance_squared) {
-	float r1 = cu_drand48(seed);
-	float r2 = cu_drand48(seed);
+	float r1 = RandomFloat01(seed);
+	float r2 = RandomFloat01(seed);
 	float z = 1 + r2*(sqrt(1 - radius*radius / distance_squared) - 1);
 	float phi = 2 * M_PI*r1;
 	float x = cos(phi)*sqrt(1 - z*z);
 	float y = sin(phi)*sqrt(1 - z*z);
 	return make_float3(x, y, z);
 }
+
 __device__ bool refract(const float3& v, const float3& n, float ni_over_nt, float3& refracted) {
 	float3 uv = normalize(v);
 	float dt = dot(uv, n);

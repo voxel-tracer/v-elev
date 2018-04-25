@@ -64,8 +64,6 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	);
 
 	hit_record rec(r.point_at_parameter(hit.hit_t), hit_n);
-	curandStatePhilox4_32_10_t localState;
-	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &localState);
 	const lambertian mat(albedo);
 
 	scatter_record srec;
@@ -74,7 +72,10 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	sun_pdf plight(&s, rec.hit_p);
 	mixture_pdf p(&plight, srec.pdf_ptr);
 
-	srec.scattered = ray(rec.hit_p, p.generate(&localState));
+	curandStatePhilox4_32_10_t lseed;
+	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &lseed);
+	//uint lseed = seed*blockDim.x + threadIdx.x;
+	srec.scattered = ray(rec.hit_p, p.generate(&lseed));
 	const float pdf_val = p.value(srec.scattered.direction);
 	if (pdf_val > 0) {
 		const float scattering_pdf = mat.scattering_pdf(rec, srec.scattered);
