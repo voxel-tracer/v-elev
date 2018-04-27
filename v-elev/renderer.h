@@ -8,7 +8,7 @@
 #include "voxel_model.h"
 #include "sun.h"
 
-#define DBG_FILE
+//#define DBG_FILE
 
 struct pixel {
 	uint samples = 0;

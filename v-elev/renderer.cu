@@ -220,7 +220,7 @@ void renderer::start_kernel(const work_unit* wu) {
 #endif // DBG_FILE
 	hit_scene <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), d_heightmap, model->size, 0.1f, FLT_MAX, wu->d_hits);
 #ifdef DBG_FILE
-	err(cudaMemcpyAsync(wu->h_hits, wu->d_hits, wu->length() * sizeof(cu_hit), cudaMemcpyDeviceToHost, wu->stream), "copy hits from device to host");
+	err(cudaMemcpy(wu->h_hits, wu->d_hits, wu->length() * sizeof(cu_hit), cudaMemcpyDeviceToHost), "copy hits from device to host");
 	output_file->write((char*)wu->h_hits, wu->length() * sizeof(cu_hit));
 #endif // DBG_FILE
 	simple_color <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), wu->d_hits, wu->d_clrs, num_runs++, model_albedo, scene_sun, max_depth);

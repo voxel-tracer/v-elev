@@ -34,7 +34,6 @@ __global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned c
 	hits[i].hit_t = hit.hit_t;
 }
 
-
 __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
 
 	const int ray_idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -63,34 +62,29 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 		-1 * (hit.hit_face == Z)*signum(r.direction.z)
 	);
 
-	hit_record rec(r.point_at_parameter(hit.hit_t), hit_n);
-	const lambertian mat(albedo);
+	pdf* scatter_pdf = new cosine_pdf(hit_n);
 
-	scatter_record srec;
-	mat.scatter(rec, srec);
-
-	sun_pdf plight(&s, rec.hit_p);
-	mixture_pdf p(&plight, srec.pdf_ptr);
+	const float3 hit_p(r.point_at_parameter(hit.hit_t));
+	sun_pdf plight(&s, hit_p);
+	mixture_pdf p(&plight, scatter_pdf);
 
 	curandStatePhilox4_32_10_t lseed;
 	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &lseed);
-	//uint lseed = seed*blockDim.x + threadIdx.x;
-	srec.scattered = ray(rec.hit_p, p.generate(&lseed));
-	const float pdf_val = p.value(srec.scattered.direction);
+	const float3 scattered(p.generate(&lseed));
+	const float pdf_val = p.value(scattered);
 	if (pdf_val > 0) {
-		const float scattering_pdf = mat.scattering_pdf(rec, srec.scattered);
-		srec.attenuation *= scattering_pdf / pdf_val;
+		const float scattering_pdf = fmaxf(0, dot(hit_n, scattered) / M_PI);
 
-		crec.origin = srec.scattered.origin;
-		crec.direction = srec.scattered.direction;
-		crec.color = srec.attenuation;
+		crec.origin = hit_p;
+		crec.direction = scattered;
+		crec.color = albedo*scattering_pdf / pdf_val;
 		crec.done = false;
 	}
 	else {
 		crec.color = make_float3(0, 0, 0);
 		crec.done = true;
 	}
-	delete srec.pdf_ptr;
+	delete scatter_pdf;
 }
 
 void err(cudaError_t err, char *msg)
@@ -113,6 +107,16 @@ void city_scene(sun **s, voxelModel** model, float aspect) {
 
 	*s = new sun(make_float3(700, 1400, 1400), 200, make_float3(50));
 	*model = new voxelModel(data, image_x, image_y);
+}
+
+void print_stats(cu_hit *hits, const uint num_hits) 
+{
+	uint num_no_hit = 0;
+
+	for (uint i = 0; i < num_hits; i++)
+		if (hits[i].hit_face == NO_HIT) num_no_hit++;
+
+	printf("%d/%d (%d%%) are NO_HIT\n", num_no_hit, num_hits, 100*num_no_hit / num_hits);
 }
 
 int main()
@@ -164,13 +168,14 @@ int main()
 
 		input_file.read((char*)rays, num_rays * sizeof(ray));
 		input_file.read((char*)hits, num_rays * sizeof(cu_hit));
+		print_stats(hits, num_rays);
 
 		// copy rays to gpu and run kernel
 		clock_t begin = clock();
-		//err(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays from host to device");
-		//hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, 0.1f, FLT_MAX, d_hits);
-		//cudaDeviceSynchronize();
-		//hit_duration += clock() - begin;
+		err(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays from host to device");
+		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, 0.1f, FLT_MAX, d_hits);
+		cudaDeviceSynchronize();
+		hit_duration += clock() - begin;
 								 
 		err(cudaMemcpy(d_hits, hits, num_rays * sizeof(cu_hit), cudaMemcpyHostToDevice), "copy hits from host to device");
 		begin = clock();
@@ -185,9 +190,9 @@ int main()
 	
 	std::cout << "num iterations " << num_iter << " in " << total_time << " seconds" << std::endl;
 	{
-		//const uint total_exec_time = hit_duration / CLOCKS_PER_SEC;
-		//std::cout << "hit_scene took " << total_exec_time << " seconds" << std::endl;
-		//std::cout << "  " << sscale(num_iter*num_rays / total_exec_time) << " rays/s" << std::endl;
+		const uint total_exec_time = hit_duration / CLOCKS_PER_SEC;
+		std::cout << "hit_scene took " << total_exec_time << " seconds" << std::endl;
+		std::cout << "  " << sscale(num_iter*num_rays / total_exec_time) << " rays/s" << std::endl;
 	}
 	{
 		const uint total_exec_time = color_duration / CLOCKS_PER_SEC;

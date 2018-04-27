@@ -34,7 +34,7 @@ public:
 		return 0.5 * p[0]->value(direction) + 0.5 *p[1]->value(direction);
 	}
 	__device__ virtual float3 generate(seed_t seed) const {
-		if (cu_drand48(seed) < 0.5)
+		if (RandomFloat01(seed) < 0.5)
 			return p[0]->generate(seed);
 		else
 			return p[1]->generate(seed);

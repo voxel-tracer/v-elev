@@ -10,8 +10,8 @@
 #include <vector_functions.h>
 #include <helper_math.h>
 
+//#define seed_t uint&
 #include <curand_kernel.h>
-
 #define seed_t curandStatePhilox4_32_10_t*
 
 typedef union {
@@ -40,7 +40,7 @@ struct cu_hit {
 // Compute a pseudorandom integer.
 // Output value in range [0, 32767]
 float drand48(void);
-__device__ float cu_drand48(seed_t seed);
+__device__ float RandomFloat01(seed_t seed);
 __device__ float3 random_cosine_direction(seed_t seed);
 __device__ float3 random_to_sphere(seed_t seed);
 __device__ float3 random_to_sphere(seed_t seed, float radius, float distance_squared);
