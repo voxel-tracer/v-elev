@@ -17,54 +17,72 @@
 #include "material.h"
 #include "human-readable.h"
 
-__global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, float t_min, float t_max, cu_hit* hits)
+typedef struct ray_soa {
+	float *ox;
+	float *oy;
+	float *oz;
+	float *dx;
+	float *dy;
+	float *dz;
+} ray_soa;
+
+typedef struct hit_soa {
+	float *hit_t;
+	uint *hit_face;
+} hit_soa;
+
+__global__ void hit_scene(const ray_soa rays, const hit_soa hits, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, float t_min, float t_max)
 {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if (i >= num_rays) return;
 
-	const ray *r = &(rays[i]);
+	const ray r(
+		make_float3(rays.ox[i], rays.oy[i], rays.oz[i]),
+		make_float3(rays.dx[i], rays.dy[i], rays.dz[i])
+	);
 	const voxelModel model(heightmap, model_size);
 	cu_hit hit;
-	if (!model.hit(*r, t_min, t_max, hit)) {
-		hits[i].hit_face = NO_HIT;
+	if (!model.hit(r, t_min, t_max, hit)) {
+		hits.hit_face[i] = NO_HIT;
 		return;
 	}
 
-	hits[i].hit_face = hit.hit_face;
-	hits[i].hit_t = hit.hit_t;
+	hits.hit_face[i] = hit.hit_face;
+	hits.hit_t[i] = hit.hit_t;
 }
 
-__global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
+__global__ void simple_color(const ray_soa rays, const hit_soa hits, const uint num_rays, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
 
-	const int ray_idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (ray_idx >= num_rays) return;
+	const int i = blockDim.x * blockIdx.x + threadIdx.x;
+	if (i >= num_rays) return;
 
-	const ray& r = rays[ray_idx];
-	const cu_hit hit(hits[ray_idx]);
-	clr_rec& crec = clrs[ray_idx];
+	//clr_rec& crec = clrs[i];
 
-	if (hit.hit_face == NO_HIT) {
+	const uint hit_face = hits.hit_face[i];
+	if (hit_face == NO_HIT) {
 		// no intersection with spheres, return sky color
-		if (s.pdf_value(r.origin, r.direction) > 0) {
-			crec.color = s.clr;
-			crec.done = true;
-		}
-		else {
-			crec.color = make_float3(0);
-			crec.done = true;
-		}
+		//if (s.pdf_value(r.origin, r.direction) > 0) {
+		//	//crec.color = s.clr;
+		//	//crec.done = true;
+		//}
+		//else {
+		//	//crec.color = make_float3(0);
+		//	//crec.done = true;
+		//}
 		return;
 	}
 
+	const float3 direction = make_float3(rays.dx[i], rays.dy[i], rays.dz[i]);
 	const float3 hit_n = make_float3(
-		-1 * (hit.hit_face == X)*signum(r.direction.x),
-		-1 * (hit.hit_face == Y)*signum(r.direction.y),
-		-1 * (hit.hit_face == Z)*signum(r.direction.z)
+		-1 * (hit_face == X)*signum(direction.x),
+		-1 * (hit_face == Y)*signum(direction.y),
+		-1 * (hit_face == Z)*signum(direction.z)
 	);
 
 	pdf* scatter_pdf = new cosine_pdf(hit_n);
 
-	const float3 hit_p(r.point_at_parameter(hit.hit_t));
+	const float3 origin = make_float3(rays.ox[i], rays.oy[i], rays.oz[i]);
+	const float3 hit_p(origin + hits.hit_t[i] * direction);
 	sun_pdf plight(&s, hit_p);
 	mixture_pdf p(&plight, scatter_pdf);
 
@@ -75,14 +93,14 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	if (pdf_val > 0) {
 		const float scattering_pdf = fmaxf(0, dot(hit_n, scattered) / M_PI);
 
-		crec.origin = hit_p;
-		crec.direction = scattered;
-		crec.color = albedo*scattering_pdf / pdf_val;
-		crec.done = false;
+		//crec.origin = hit_p;
+		//crec.direction = scattered;
+		//crec.color = albedo*scattering_pdf / pdf_val;
+		//crec.done = false;
 	}
 	else {
-		crec.color = make_float3(0, 0, 0);
-		crec.done = true;
+		//crec.color = make_float3(0, 0, 0);
+		//crec.done = true;
 	}
 	delete scatter_pdf;
 }
@@ -146,13 +164,24 @@ int main()
 	std::cout << "num_rays per iteration " << sscale(num_rays) << std::endl;
 
 	ray* rays = new ray[num_rays];
+	float* temp_floats = new float[num_rays];
+	uint* temp_uints = new uint[num_rays];
 	cu_hit* hits = new cu_hit[num_rays];
 	clr_rec* clrs = new clr_rec[num_rays];
 
-	ray* d_rays = NULL;
-	err(cudaMalloc((void **)&d_rays, num_rays * sizeof(ray)), "allocate device d_rays");
-	cu_hit* d_hits = NULL;
-	err(cudaMalloc((void **)&d_hits, num_rays * sizeof(cu_hit)), "allocate device d_hits");
+	// prepare ray_soa
+	ray_soa ray_soas;
+	err(cudaMalloc((void**)&ray_soas.ox, num_rays * sizeof(float)), "allocate ray_soa.ox");
+	err(cudaMalloc((void**)&ray_soas.oy, num_rays * sizeof(float)), "allocate ray_soa.oy");
+	err(cudaMalloc((void**)&ray_soas.oz, num_rays * sizeof(float)), "allocate ray_soa.oz");
+	err(cudaMalloc((void**)&ray_soas.dx, num_rays * sizeof(float)), "allocate ray_soa.dx");
+	err(cudaMalloc((void**)&ray_soas.dy, num_rays * sizeof(float)), "allocate ray_soa.dy");
+	err(cudaMalloc((void**)&ray_soas.dz, num_rays * sizeof(float)), "allocate ray_soa.dz");
+
+	hit_soa hit_soas;
+	err(cudaMalloc((void**)&hit_soas.hit_t, num_rays * sizeof(float)), "allocate hit_soa.hit_t");
+	err(cudaMalloc((void**)&hit_soas.hit_face, num_rays * sizeof(uint)), "allocate hit_soa.hit_face");
+
 	clr_rec* d_clrs = NULL;
 	err(cudaMalloc((void **)&d_clrs, num_rays * sizeof(clr_rec)), "allocate device d_clrs");
 
@@ -168,18 +197,44 @@ int main()
 
 		input_file.read((char*)rays, num_rays * sizeof(ray));
 		input_file.read((char*)hits, num_rays * sizeof(cu_hit));
-		print_stats(hits, num_rays);
+		//print_stats(hits, num_rays);
+
+		// copy rays to ray_soas
+		for (uint i = 0; i < num_rays; i++)
+			temp_floats[i] = rays[i].origin.x;
+		err(cudaMemcpy(ray_soas.ox, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.ox from host to device");
+		for (uint i = 0; i < num_rays; i++)
+			temp_floats[i] = rays[i].origin.y;
+		err(cudaMemcpy(ray_soas.oy, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.oy from host to device");
+		for (uint i = 0; i < num_rays; i++)
+			temp_floats[i] = rays[i].origin.z;
+		err(cudaMemcpy(ray_soas.oz, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.oz from host to device");
+		
+		for (uint i = 0; i < num_rays; i++)
+			temp_floats[i] = rays[i].direction.x;
+		err(cudaMemcpy(ray_soas.dx, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.dx from host to device");
+		for (uint i = 0; i < num_rays; i++)
+			temp_floats[i] = rays[i].direction.y;
+		err(cudaMemcpy(ray_soas.dy, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.dy from host to device");
+		for (uint i = 0; i < num_rays; i++)
+			temp_floats[i] = rays[i].direction.z;
+		err(cudaMemcpy(ray_soas.dz, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.dz from host to device");
 
 		// copy rays to gpu and run kernel
 		clock_t begin = clock();
-		err(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays from host to device");
-		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, 0.1f, FLT_MAX, d_hits);
+		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(ray_soas, hit_soas, num_rays, d_heightmap, model->size, 0.1f, FLT_MAX);
 		cudaDeviceSynchronize();
 		hit_duration += clock() - begin;
-								 
-		err(cudaMemcpy(d_hits, hits, num_rays * sizeof(cu_hit), cudaMemcpyHostToDevice), "copy hits from host to device");
+
+		for (uint i = 0; i < num_rays; i++)
+			temp_floats[i] = hits[i].hit_t;
+		err(cudaMemcpy(hit_soas.hit_t, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy hit_soa.hit_t from host to device");
+		for (uint i = 0; i < num_rays; i++)
+			temp_uints[i] = hits[i].hit_face;
+		err(cudaMemcpy(hit_soas.hit_face, temp_uints, num_rays * sizeof(uint), cudaMemcpyHostToDevice), "copy hit_soa.hit_face from host to device");
+
 		begin = clock();
-		simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_hits, d_clrs, num_iter, albedo, *s);
+		simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(ray_soas, hit_soas, num_rays, d_clrs, num_iter, albedo, *s);
 		err(cudaMemcpy(clrs, d_clrs, num_rays * sizeof(clr_rec), cudaMemcpyDeviceToHost), "copy results from device to host");
 		color_duration += clock() - begin;
 
@@ -201,10 +256,17 @@ int main()
 	}
 
 	delete[] rays;
+	delete[] temp_floats;
 	delete[] hits;
 	delete[] clrs;
-	err(cudaFree(d_rays), "free device d_rays");
-	err(cudaFree(d_hits), "free device d_hits");
+	err(cudaFree(ray_soas.ox), "free device ray_soa.ox");
+	err(cudaFree(ray_soas.oy), "free device ray_soa.oy");
+	err(cudaFree(ray_soas.oz), "free device ray_soa.oz");
+	err(cudaFree(ray_soas.dx), "free device ray_soa.dx");
+	err(cudaFree(ray_soas.dy), "free device ray_soa.dy");
+	err(cudaFree(ray_soas.dz), "free device ray_soa.dz");
+	err(cudaFree(hit_soas.hit_face), "free device hit_soa.hit_face");
+	err(cudaFree(hit_soas.hit_t), "free device hit_soa.hit_t");
 	err(cudaFree(d_clrs), "free device d_clrs");
 	input_file.close();
 
