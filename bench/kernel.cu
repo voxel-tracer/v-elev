@@ -90,27 +90,24 @@ __global__ void simple_color(const paths p, const uint num_rays, const uint seed
 		(hit_face == 1)*hit_sign,
 		(hit_face == 2)*hit_sign);
 
-	cosine_pdf scatter_pdf(hit_n);
-	//cosine_x scatter_pdf;
 	const float3 hit_p = make_float3(p.px[i], p.py[i], p.pz[i]);
+	cosine_pdf scatter_pdf(hit_n);
 	sun_pdf plight(&s, hit_p);
 	mixture_pdf mix(&plight, &scatter_pdf);
 
 	curandStatePhilox4_32_10_t lseed;
 	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &lseed);
+	
 	const float3 scattered(mix.generate(&lseed));
-
 	const float sun_pdf = plight.value(scattered);
 	const float scattering_pdf = scatter_pdf.value(scattered);
-	p.sun_pdf[i] = sun_pdf;
 
+	p.sun_pdf[i] = sun_pdf;
+	p.scattered_pdf[i] = scattering_pdf;
 	if (scattering_pdf > 0) {
 		p.sx[i] = scattered.x;
 		p.sy[i] = scattered.y;
 		p.sz[i] = scattered.z;
-	}
-	else {
-		p.scattered_pdf[i] = 0;
 	}
 }
 
