@@ -62,11 +62,11 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 		-1 * (hit.hit_face == Z)*signum(r.direction.z)
 	);
 
-	pdf* scatter_pdf = new cosine_pdf(hit_n);
+	cosine_pdf scatter_pdf(hit_n);
 
 	const float3 hit_p(r.point_at_parameter(hit.hit_t));
 	sun_pdf plight(&s, hit_p);
-	mixture_pdf p(&plight, scatter_pdf);
+	mixture_pdf p(&plight, &scatter_pdf);
 
 	curandStatePhilox4_32_10_t lseed;
 	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &lseed);
@@ -84,7 +84,6 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 		crec.color = make_float3(0, 0, 0);
 		crec.done = true;
 	}
-	delete scatter_pdf;
 }
 
 void err(cudaError_t err, char *msg)
@@ -168,7 +167,7 @@ int main()
 
 		input_file.read((char*)rays, num_rays * sizeof(ray));
 		input_file.read((char*)hits, num_rays * sizeof(cu_hit));
-		print_stats(hits, num_rays);
+		//print_stats(hits, num_rays);
 
 		// copy rays to gpu and run kernel
 		clock_t begin = clock();
