@@ -171,21 +171,18 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &localState);
 	const lambertian mat(albedo);
 
-	scatter_record srec;
-	mat.scatter(rec, srec);
-
 	sun_pdf plight(&s, rec.hit_p);
-	mixture_pdf p(&plight, srec.pdf_ptr);
+	cosine_pdf scatter_pdf(hit_n);
+	mixture_pdf p(&plight, &scatter_pdf);
 
-	srec.scattered = ray(rec.hit_p, p.generate(&localState));
-	const float pdf_val = p.value(srec.scattered.direction);
+	const float3 scattered = p.generate(&localState);
+	const float pdf_val = p.value(scattered);
 	if (pdf_val > 0) {
-		const float scattering_pdf = mat.scattering_pdf(rec, srec.scattered);
-		srec.attenuation *= scattering_pdf / pdf_val;
+		const float scattering_pdf = mat.scattering_pdf(rec, scattered);
 
-		crec.origin = srec.scattered.origin;
-		crec.direction = srec.scattered.direction;
-		crec.color = srec.attenuation;
+		crec.origin = rec.hit_p;
+		crec.direction = scattered;
+		crec.color = mat.albedo*scattering_pdf / pdf_val;
 		crec.done = false;
 
 		// following code can be useful to debug rendering issues
@@ -201,7 +198,6 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 		crec.color = make_float3(0, 0, 0);
 		crec.done = true;
 	}
-	delete srec.pdf_ptr;
 }
 
 void renderer::copy_rays_to_gpu(const work_unit* wu) {
