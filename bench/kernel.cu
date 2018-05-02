@@ -17,92 +17,101 @@
 #include "material.h"
 #include "human-readable.h"
 
-typedef struct ray_soa {
+typedef union f3u {
+	float3 f;
+	float a[3];
+
+	__device__ f3u(float3 v) : f(v) {}
+} f3u;
+
+typedef struct paths {
+	// ray.origin
 	float *ox;
 	float *oy;
 	float *oz;
+	// ray.direction
 	float *dx;
 	float *dy;
 	float *dz;
-} ray_soa;
+	// hit_face + 2*signbit(direction[hit_face])
+	char *hit_case;
+	// hit_p
+	float *px;
+	float *py;
+	float *pz;
+	// scattered.direction
+	float *sx;
+	float *sy;
+	float *sz;
+	// sun pdf
+	float *sun_pdf;
+	// scattered pdf
+	float *scattered_pdf;
+} paths;
 
-typedef struct hit_soa {
-	float *hit_t;
-	uint *hit_face;
-} hit_soa;
-
-__global__ void hit_scene(const ray_soa rays, const hit_soa hits, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, float t_min, float t_max)
+__global__ void hit_scene(const paths p, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, float t_min, float t_max)
 {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if (i >= num_rays) return;
 
 	const ray r(
-		make_float3(rays.ox[i], rays.oy[i], rays.oz[i]),
-		make_float3(rays.dx[i], rays.dy[i], rays.dz[i])
+		make_float3(p.ox[i], p.oy[i], p.oz[i]),
+		make_float3(p.dx[i], p.dy[i], p.dz[i])
 	);
 	const voxelModel model(heightmap, model_size);
 	cu_hit hit;
 	if (!model.hit(r, t_min, t_max, hit)) {
-		hits.hit_face[i] = NO_HIT;
+		p.hit_case[i] = NO_HIT;
 		return;
 	}
 
-	hits.hit_face[i] = hit.hit_face;
-	hits.hit_t[i] = hit.hit_t;
+	const f3u dir(r.direction);
+	p.hit_case[i] = 1 + hit.hit_face * 2 * signbit(dir.a[hit.hit_face]);
+
+	const float3 hit_p = r.point_at_parameter(hit.hit_t);
+	p.px[i] = hit_p.x;
+	p.py[i] = hit_p.y;
+	p.pz[i] = hit_p.z;
 }
 
-__global__ void simple_color(const ray_soa rays, const hit_soa hits, const uint num_rays, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
+__global__ void simple_color(const paths p, const uint num_rays, const uint seed, const float3 albedo, const sun s) {
 
 	const int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if (i >= num_rays) return;
 
-	//clr_rec& crec = clrs[i];
-
-	const uint hit_face = hits.hit_face[i];
-	if (hit_face == NO_HIT) {
-		// no intersection with spheres, return sky color
-		//if (s.pdf_value(r.origin, r.direction) > 0) {
-		//	//crec.color = s.clr;
-		//	//crec.done = true;
-		//}
-		//else {
-		//	//crec.color = make_float3(0);
-		//	//crec.done = true;
-		//}
+	const char hit_case = p.hit_case[i];
+	if (hit_case == NO_HIT)
 		return;
-	}
 
-	const float3 direction = make_float3(rays.dx[i], rays.dy[i], rays.dz[i]);
+	const char hit_face = hit_face >> 2;
+	const char hit_sign = ((hit_face & 1) << 1) - 1;
 	const float3 hit_n = make_float3(
-		-1 * (hit_face == X)*signum(direction.x),
-		-1 * (hit_face == Y)*signum(direction.y),
-		-1 * (hit_face == Z)*signum(direction.z)
-	);
+		(hit_face == 0)*hit_sign,
+		(hit_face == 1)*hit_sign,
+		(hit_face == 2)*hit_sign);
 
-	pdf* scatter_pdf = new cosine_pdf(hit_n);
-
-	const float3 origin = make_float3(rays.ox[i], rays.oy[i], rays.oz[i]);
-	const float3 hit_p(origin + hits.hit_t[i] * direction);
+	cosine_pdf scatter_pdf(hit_n);
+	//cosine_x scatter_pdf;
+	const float3 hit_p = make_float3(p.px[i], p.py[i], p.pz[i]);
 	sun_pdf plight(&s, hit_p);
-	mixture_pdf p(&plight, scatter_pdf);
+	mixture_pdf mix(&plight, &scatter_pdf);
 
 	curandStatePhilox4_32_10_t lseed;
 	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &lseed);
-	const float3 scattered(p.generate(&lseed));
-	const float pdf_val = p.value(scattered);
-	if (pdf_val > 0) {
-		const float scattering_pdf = fmaxf(0, dot(hit_n, scattered) / M_PI);
+	const float3 scattered(mix.generate(&lseed));
 
-		//crec.origin = hit_p;
-		//crec.direction = scattered;
-		//crec.color = albedo*scattering_pdf / pdf_val;
-		//crec.done = false;
+	const float sun_pdf = plight.value(scattered);
+	const float scattering_pdf = scatter_pdf.value(scattered);
+	p.sun_pdf[i] = sun_pdf;
+
+	if (scattering_pdf > 0) {
+		p.sx[i] = scattered.x;
+		p.sy[i] = scattered.y;
+		p.sz[i] = scattered.z;
 	}
 	else {
-		//crec.color = make_float3(0, 0, 0);
-		//crec.done = true;
+		p.scattered_pdf[i] = 0;
 	}
-	delete scatter_pdf;
 }
 
 void err(cudaError_t err, char *msg)
@@ -165,78 +174,75 @@ int main()
 
 	ray* rays = new ray[num_rays];
 	float* temp_floats = new float[num_rays];
-	uint* temp_uints = new uint[num_rays];
-	cu_hit* hits = new cu_hit[num_rays];
-	clr_rec* clrs = new clr_rec[num_rays];
 
-	// prepare ray_soa
-	ray_soa ray_soas;
-	err(cudaMalloc((void**)&ray_soas.ox, num_rays * sizeof(float)), "allocate ray_soa.ox");
-	err(cudaMalloc((void**)&ray_soas.oy, num_rays * sizeof(float)), "allocate ray_soa.oy");
-	err(cudaMalloc((void**)&ray_soas.oz, num_rays * sizeof(float)), "allocate ray_soa.oz");
-	err(cudaMalloc((void**)&ray_soas.dx, num_rays * sizeof(float)), "allocate ray_soa.dx");
-	err(cudaMalloc((void**)&ray_soas.dy, num_rays * sizeof(float)), "allocate ray_soa.dy");
-	err(cudaMalloc((void**)&ray_soas.dz, num_rays * sizeof(float)), "allocate ray_soa.dz");
+	// prepare paths
+	paths p;
+	cudaMalloc((void**)&p.ox, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.oy, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.oz, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.dx, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.dy, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.dz, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.hit_case, num_rays * sizeof(char));
+	cudaMalloc((void**)&p.px, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.py, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.pz, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.sx, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.sy, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.sz, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.sun_pdf, num_rays * sizeof(float));
+	cudaMalloc((void**)&p.scattered_pdf, num_rays * sizeof(float));
 
-	hit_soa hit_soas;
-	err(cudaMalloc((void**)&hit_soas.hit_t, num_rays * sizeof(float)), "allocate hit_soa.hit_t");
-	err(cudaMalloc((void**)&hit_soas.hit_face, num_rays * sizeof(uint)), "allocate hit_soa.hit_face");
-
-	clr_rec* d_clrs = NULL;
-	err(cudaMalloc((void **)&d_clrs, num_rays * sizeof(clr_rec)), "allocate device d_clrs");
-
-	const int threadsPerBlock = 128;
+	const int threadsPerBlock = 256;
 	const int blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;
 
 	clock_t hit_duration = 0;
 	clock_t color_duration = 0;
 
+	cudaEvent_t startEvent, stopEvent;
+	err(cudaEventCreate(&startEvent), "create startEvent");
+	err(cudaEventCreate(&stopEvent), "create endEvent");
+
+	float ms;
 	clock_t start = clock();
 	while (!input_file.eof()) {
-		//std::cout << "reading iteration " << num_iter << std::endl;
-
 		input_file.read((char*)rays, num_rays * sizeof(ray));
-		input_file.read((char*)hits, num_rays * sizeof(cu_hit));
-		//print_stats(hits, num_rays);
+		input_file.ignore(num_rays * sizeof(cu_hit));
 
 		// copy rays to ray_soas
 		for (uint i = 0; i < num_rays; i++)
 			temp_floats[i] = rays[i].origin.x;
-		err(cudaMemcpy(ray_soas.ox, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.ox from host to device");
+		cudaMemcpy(p.ox, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice);
 		for (uint i = 0; i < num_rays; i++)
 			temp_floats[i] = rays[i].origin.y;
-		err(cudaMemcpy(ray_soas.oy, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.oy from host to device");
+		cudaMemcpy(p.oy, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice);
 		for (uint i = 0; i < num_rays; i++)
 			temp_floats[i] = rays[i].origin.z;
-		err(cudaMemcpy(ray_soas.oz, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.oz from host to device");
-		
+		cudaMemcpy(p.oz, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice);
+
 		for (uint i = 0; i < num_rays; i++)
 			temp_floats[i] = rays[i].direction.x;
-		err(cudaMemcpy(ray_soas.dx, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.dx from host to device");
+		cudaMemcpy(p.dx, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice);
 		for (uint i = 0; i < num_rays; i++)
 			temp_floats[i] = rays[i].direction.y;
-		err(cudaMemcpy(ray_soas.dy, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.dy from host to device");
+		cudaMemcpy(p.dy, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice);
 		for (uint i = 0; i < num_rays; i++)
 			temp_floats[i] = rays[i].direction.z;
-		err(cudaMemcpy(ray_soas.dz, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy ray.dz from host to device");
+		cudaMemcpy(p.dz, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice);
 
-		// copy rays to gpu and run kernel
-		clock_t begin = clock();
-		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(ray_soas, hit_soas, num_rays, d_heightmap, model->size, 0.1f, FLT_MAX);
+		err(cudaEventRecord(startEvent, 0), "record startEvent");
+		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(p, num_rays, d_heightmap, model->size, 0.1f, FLT_MAX);
+		err(cudaEventRecord(stopEvent, 0), "record endEvent");
 		cudaDeviceSynchronize();
-		hit_duration += clock() - begin;
+		err(cudaEventElapsedTime(&ms, startEvent, stopEvent), "compute elapsed time");
+		hit_duration += ms;
 
-		for (uint i = 0; i < num_rays; i++)
-			temp_floats[i] = hits[i].hit_t;
-		err(cudaMemcpy(hit_soas.hit_t, temp_floats, num_rays * sizeof(float), cudaMemcpyHostToDevice), "copy hit_soa.hit_t from host to device");
-		for (uint i = 0; i < num_rays; i++)
-			temp_uints[i] = hits[i].hit_face;
-		err(cudaMemcpy(hit_soas.hit_face, temp_uints, num_rays * sizeof(uint), cudaMemcpyHostToDevice), "copy hit_soa.hit_face from host to device");
-
-		begin = clock();
-		simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(ray_soas, hit_soas, num_rays, d_clrs, num_iter, albedo, *s);
-		err(cudaMemcpy(clrs, d_clrs, num_rays * sizeof(clr_rec), cudaMemcpyDeviceToHost), "copy results from device to host");
-		color_duration += clock() - begin;
+		err(cudaEventRecord(startEvent, 0), "record startEvent");
+		simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(p, num_rays, num_iter, albedo, *s);
+		err(cudaEventRecord(stopEvent, 0), "record endEvent");
+		cudaDeviceSynchronize();
+		err(cudaEventElapsedTime(&ms, startEvent, stopEvent), "compute elapsed time");
+		color_duration += ms;
 
 		// copy hits to gpu and run kernel
 		num_iter++;
@@ -245,7 +251,7 @@ int main()
 	
 	std::cout << "num iterations " << num_iter << " in " << total_time << " seconds" << std::endl;
 	{
-		const uint total_exec_time = hit_duration / CLOCKS_PER_SEC;
+		const uint total_exec_time = hit_duration / 1000;
 		std::cout << "hit_scene took " << total_exec_time << " seconds" << std::endl;
 		std::cout << "  " << sscale(num_iter*num_rays / total_exec_time) << " rays/s" << std::endl;
 	}
@@ -254,21 +260,28 @@ int main()
 		std::cout << "simple_color took " << total_exec_time << " seconds" << std::endl;
 		std::cout << "  " << sscale(num_iter*num_rays / total_exec_time) << " rays/s" << std::endl;
 	}
+	
+	input_file.close();
 
 	delete[] rays;
 	delete[] temp_floats;
-	delete[] hits;
-	delete[] clrs;
-	err(cudaFree(ray_soas.ox), "free device ray_soa.ox");
-	err(cudaFree(ray_soas.oy), "free device ray_soa.oy");
-	err(cudaFree(ray_soas.oz), "free device ray_soa.oz");
-	err(cudaFree(ray_soas.dx), "free device ray_soa.dx");
-	err(cudaFree(ray_soas.dy), "free device ray_soa.dy");
-	err(cudaFree(ray_soas.dz), "free device ray_soa.dz");
-	err(cudaFree(hit_soas.hit_face), "free device hit_soa.hit_face");
-	err(cudaFree(hit_soas.hit_t), "free device hit_soa.hit_t");
-	err(cudaFree(d_clrs), "free device d_clrs");
-	input_file.close();
+	cudaFree(p.ox);
+	cudaFree(p.oy);
+	cudaFree(p.oz);
+	cudaFree(p.dx);
+	cudaFree(p.dy);
+	cudaFree(p.dz);
+	cudaFree(p.hit_case);
+	cudaFree(p.px);
+	cudaFree(p.py);
+	cudaFree(p.pz);
+	cudaFree(p.sx);
+	cudaFree(p.sy);
+	cudaFree(p.sz);
+	cudaFree(p.sun_pdf);
+	cudaFree(p.scattered_pdf);
+	err(cudaEventDestroy(startEvent), "free startEvent");
+	err(cudaEventDestroy(stopEvent), "free endEvent");
 
     return 0;
 }

@@ -7,7 +7,6 @@
 
 int main()
 {
-	float3 f3 = make_float3(1, 0, 0);
 	float3 dirs[6];
 	dirs[0] = make_float3(1, 0, 0);
 	dirs[1] = make_float3(-1, 0, 0);
