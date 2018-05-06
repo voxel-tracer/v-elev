@@ -146,7 +146,12 @@ int main(int argc, char **argv)
 	checkCuda(cudaSetDevice(deviceId));
 	checkCuda(cudaGetDeviceProperties(&prop, deviceId));
 	printf("Device: %s\n", prop.name);
+	printf("maxThreadsPerBlock: %d\n", prop.maxThreadsPerBlock);
+	printf("maxThreadsPerMultiProcessor: %d\n", prop.maxThreadsPerMultiProcessor);
+	printf("multiProcessorCount: %d\n", prop.multiProcessorCount);
 	printf("Memory bus width: %d\n", prop.memoryBusWidth);
+	printf("sharedMemPerBlock: %d\n", prop.sharedMemPerBlock);
+	printf("sharedMemPerMultiprocessor: %d\n", prop.sharedMemPerMultiprocessor);
 
 	runTest(deviceId, 10*1024*1024);
 }
