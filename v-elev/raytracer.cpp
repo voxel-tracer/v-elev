@@ -30,6 +30,7 @@ struct options {
 	uint ny = 500;
 	uint ns = 1;
 	uint max_depth = 50;
+	uint pixel_id = -1;
 };
 
 bool parse_args(options& o, int argc, char** argv) {
@@ -46,23 +47,22 @@ bool parse_args(options& o, int argc, char** argv) {
 	cmdl({ "ns", "num_samples" }, o.ns) >> o.ns;
 	cmdl({ "md", "max_depth" }, o.max_depth) >> o.max_depth;
 	o.show_image = cmdl["show_image"];
+	cmdl({ "pid", "pixel_id" }, o.pixel_id) >> o.pixel_id;
 }
 
-void test_scene0(camera **cam, voxelModel **model, float aspect) {
-	const uint scene_size = 10;
+void test_scene0(camera **cam, voxelModel **model, sun **s, float aspect) {
+	const uint scene_size = 2;
 	unsigned char *data = new unsigned char[scene_size*scene_size];
 	for (uint i = 0; i < scene_size*scene_size; i++)
 		data[i] = 0;
-	data[0] = 10;
-	data[1] = 1;
-	data[scene_size] = 1;
-	data[scene_size+1] = 1;
+	data[0] = 2;
 
+	*s = new sun(make_float3(100, -100, 100), 20, make_float3(50));
 	*model = new voxelModel(data, scene_size, scene_size);
-	*cam = new camera(make_float3(10), make_float3(1.5, 0.5, 1.5), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
+	*cam = new camera(make_float3(15), make_float3(1.5, 0.5, 1.5), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 }
 
-void test_scene1(camera **cam, voxelModel **model, float aspect) {
+void test_scene1(camera **cam, voxelModel **model, sun **s, float aspect) {
 	const uint scene_size = 10;
 	unsigned char *data = new unsigned char[scene_size*scene_size];
 	for (uint i = 0; i < scene_size*scene_size; i++)
@@ -77,6 +77,7 @@ void test_scene1(camera **cam, voxelModel **model, float aspect) {
 	}
 	data[scene_size * 1 + 1] = 3;
 
+	*s = new sun(make_float3(100, -100, 100), 20, make_float3(50));
 	*model = new voxelModel(data, scene_size, scene_size);
 	*cam = new camera(make_float3(10), make_float3(1.5, 0.5, 1.5), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 }
@@ -93,7 +94,7 @@ void city_scene(const char *highmap_file, camera **cam, sun **s, voxelModel** mo
 
 	*s = new sun(make_float3(700, 1400, 1400), 200, make_float3(50));
 	*model = new voxelModel(data, image_x, image_y);
-	*cam = new camera(make_float3(1400), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
+	*cam = new camera(make_float3(700), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 }
 
 void call_from_thread(renderer& r, const uint unit_idx) {
@@ -155,6 +156,11 @@ void display_image(uint nx, uint ny, const renderer& r) {
 		case SDL_QUIT:
 			quit = true;
 			break;
+		case SDL_MOUSEBUTTONUP:
+			uint x = event.motion.x;
+			uint y = event.motion.y;
+			cout << "you clicked on (" << x << ", " << y << "). pixel_id: " << r.get_pixelId(x, ny - y) << std::endl;
+			break;
 		}
 	}
 
@@ -189,7 +195,10 @@ int main(int argc, char** argv)
 	camera *cam;
 	voxelModel *model;
 	sun *s;
-	city_scene(o.highmap_file.c_str(), &cam, &s, &model, float(nx) / float(ny));
+	//city_scene(o.highmap_file.c_str(), &cam, &s, &model, float(nx) / float(ny));
+	test_scene0(&cam, &model, &s, float(nx) / float(ny));
+	//test_scene1(&cam, &model, &s, float(nx) / float(ny));
+
 	if (model == NULL) {
 		cerr << "couldn't load image" << endl;
 		return 1;
@@ -198,6 +207,7 @@ int main(int argc, char** argv)
 
 	const float albedo = .45;
 	renderer r(cam, model, make_float3(albedo), *s, nx, ny, ns, max_depth, 0.001f, num_threads);
+	r.ray_tracing_id = o.pixel_id;
 	r.prepare_kernel();
 
 	clock_t begin = clock();
@@ -216,12 +226,13 @@ int main(int argc, char** argv)
 		total_rays += wu->total_rays();
 		const double wu_cpu = double(wu->cpu_time);
 		const double wu_gpu = double(wu->gpu_time);
-		cout << "thread: " << i << " " << wu->num_iter << 
-			" iterations, cpu: " << wu_cpu / CLOCKS_PER_SEC << " (" << wu_cpu / wu->num_iter << ")"
+		cout << "thread(" << i << ") num_iters: " << wu->num_iter << 
+			", cpu: " << wu_cpu / CLOCKS_PER_SEC << " (" << wu_cpu / wu->num_iter << ")"
 			", gpu: " << wu_gpu / CLOCKS_PER_SEC << "(" << wu_gpu / wu->num_iter << ")" << endl;
 	}
 
-	cout << "performance: " << (total_rays / total_exec_time) << endl;
+	if (total_exec_time > 0)
+		cout << "performance: " << (total_rays / total_exec_time) << endl;
 
 	if (writeImage)
 		write_image(o.output_file.c_str(), nx, ny, r);

@@ -4,12 +4,20 @@
 #include "utils.h"
 
 struct ray {
+#ifdef DBG_TRACING
+	uint id;
+#endif // DBG_TRACING
+
 	float3 origin;
 	float3 direction;
 
 	__host__ __device__ ray() {}
 	__host__ __device__ ray(const float3& o, const float3& d) :origin(o), direction(d) {}
-	__host__ __device__ ray(ray& r):origin(r.origin), direction(r.direction) {}
+	__host__ __device__ ray(ray& r):origin(r.origin), direction(r.direction) {
+#ifdef DBG_TRACING
+		id = r.id;
+#endif // DBG_TRACING
+	}
 
 	__host__ __device__ float3 point_at_parameter(float t) const { return origin + t*direction; }
 };

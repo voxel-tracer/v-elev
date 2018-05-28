@@ -1,11 +1,13 @@
 #ifndef UTILS_H_
 #define UTILS_H_
 
+#define DBG_TRACING
+
 #define M_PI       3.14159265358979323846   // pi
 #define M_PI_2     1.57079632679489661923   // pi/2
 //#define M_PI_4     0.785398163397448309616  // pi/4
 
-#define EPS     0.1f
+#define EPS     0.01f
 
 #include <vector_functions.h>
 #include <helper_math.h>
@@ -54,5 +56,4 @@ __device__ float max(const float3& v);
 __device__ float min(const float3& v);
 __device__ uint max_id(const float3& v);
 __device__ uint min_id(const float3& v);
-
 #endif /* UTILS_H_ */

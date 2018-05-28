@@ -9,6 +9,7 @@
 #include "sun.h"
 
 //#define DBG_FILE
+#define DBG_RENDER
 
 struct pixel {
 	uint samples = 0;
@@ -99,6 +100,8 @@ public:
 	clock_t kernel = 0;
 	clock_t generate = 0;
 	clock_t compact = 0;
+
+	uint ray_tracing_id = -1;
 
 private:
 	void copy_rays_to_gpu(const work_unit* wu);

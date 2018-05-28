@@ -137,6 +137,74 @@ struct voxelModel {
 		return true;
 	}
 
+#ifdef DBG_TRACING
+	__device__ bool hit_trace(const ray& r, float t_min, float t_max, cu_hit& hit) const {
+		printf("- hit_trace: -----------------------------------\n");
+		float3u hit_min, hit_max;
+		hit_min.v = make_float3(t_min);
+		hit_max.v = make_float3(t_max);
+		if (!hitDist(r, hit_min.v, hit_max.v) || min(hit_max.v) < t_min) {
+			printf("bbox NO_HIT\n");
+			return false;
+		}
+
+		float3u d; d.v = r.direction; //TODO make ray.direction float3u
+		int3u d_sign;
+		d_sign.v = make_int3(signum(d.v.x), signum(d.v.y), signum(d.v.z));
+
+		// find which face was hit
+		int face = max_id(hit_min.v);
+		float minT = hit_min.a[face]; // t at intersection
+		float3 h_vec = r.point_at_parameter(minT); // intersected point
+		int3u voxel;
+		voxel.v = make_int3(
+			h_vec.x + d_sign.v.x*EPS,
+			h_vec.y + d_sign.v.y*EPS,
+			h_vec.z + d_sign.v.z*EPS
+		); // intersected voxel
+		printf("face: %d, voxel(%d, %d, %d)\n", face, voxel.v.x, voxel.v.y, voxel.v.z);
+
+		// compute tVec: how much we need to travel in each axis to hit next voxel
+		// next_voxel = voxel + step (+1 if step < 0)
+		// this is equivalent to
+		// next_voxel = voxel (+1 if step > 0)
+		float3u tVec;
+		//TODO if I just divide by 0 I will get +/- infinity, won't that be enough ?
+		tVec.v = make_float3(
+			(d_sign.v.x == 0 ? FLT_MAX : (voxel.v.x + (d_sign.v.x > 0 ? 1 : 0) - r.origin.x) / d.v.x),
+			(d_sign.v.y == 0 ? FLT_MAX : (voxel.v.y + (d_sign.v.y > 0 ? 1 : 0) - r.origin.y) / d.v.y),
+			(d_sign.v.z == 0 ? FLT_MAX : (voxel.v.z + (d_sign.v.z > 0 ? 1 : 0) - r.origin.z) / d.v.z));
+		printf("t_vec(%f, %f, %f)\n", tVec.v.x, tVec.v.y, tVec.v.z);
+
+		// compute tDelta: how much we need to travel in each axis to move from one voxel to another
+		// final Vec3 tDelta = rD.abs().div(gridSize).inv();
+		float3u tDelta;
+		tDelta.v = 1 / fabs(d.v);
+		printf("t_delta(%f, %f, %f)\n", tDelta.v.x, tDelta.v.y, tDelta.v.z);
+
+		// remember tVec.get(face) is the intersection with the next voxel
+		// substract tDelta[face] to get the intersection with current voxel
+		while ((tVec.a[face] - tDelta.a[face] + EPS) < t_min || (!isVoxelFull(voxel.v) && (tVec.a[face] - EPS) <= hit_max.a[face])) {
+			// we need to move enough to hit another voxel
+			face = min_id(tVec.v);
+			voxel.a[face] += d_sign.a[face];
+			tVec.a[face] += tDelta.a[face];
+			printf("next face %d, voxel(%d, %d, %d), t_vec(%f, %f, %f)\n", face, voxel.v.x, voxel.v.y, voxel.v.z, tVec.v.x, tVec.v.y, tVec.v.z);
+		}
+
+		if (!isVoxelFull(voxel.v)) {
+			printf("NO_HIT\n");
+			return false;
+		}
+
+		//COMPUTE HIT RECORD
+		hit.hit_t = tVec.a[face] - tDelta.a[face];
+		hit.hit_face = face + 1;
+		printf("HIT(%d, %f)\n", hit.hit_face, hit.hit_t);
+		return true;
+	}
+#endif // DBG_TRACING
+
 	__device__ bool isVoxelFull(const int3& voxel) const {
 		// if voxel outside bbox, its considered empty
 		if (voxel.x < 0 || voxel.y < 0 || voxel.z < 0) return false;

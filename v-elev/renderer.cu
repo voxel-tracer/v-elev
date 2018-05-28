@@ -115,10 +115,13 @@ inline void renderer::generate_ray(work_unit* wu, const uint sampleId, int x, in
 	const float v = float(y + drand48()) / float(ny);
 	const uint local_ray_idx = sampleId - wu->start_idx;
 	cam->get_ray(u, v,wu->h_rays[local_ray_idx]);
+#ifdef DBG_TRACING
+	wu->h_rays[local_ray_idx].id = get_pixelId(x, y);
+#endif // DBG_TRACING
 	wu->samples[local_ray_idx] = sample(get_pixelId(x, y));
 }
 
-__global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, float t_min, float t_max, cu_hit* hits)
+__global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, float t_min, float t_max, cu_hit* hits, const uint ray_tracing_id)
 {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if (i >= num_rays) return;
@@ -126,10 +129,25 @@ __global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned c
 	const ray *r = &(rays[i]);
 	const voxelModel model(heightmap, model_size);
 	cu_hit hit;
+#ifdef DBG_TRACING
+	if (r->id == ray_tracing_id) {
+		if (!model.hit_trace(*r, t_min, t_max, hit)) {
+			hits[i].hit_face = NO_HIT;
+			return;
+		}
+	} else {
+		if (!model.hit(*r, t_min, t_max, hit)) {
+			hits[i].hit_face = NO_HIT;
+			return;
+		}
+	}
+#else
 	if (!model.hit(*r, t_min, t_max, hit)) {
 		hits[i].hit_face = NO_HIT;
 		return;
-	}
+}
+#endif // DBG_TRACING
+
 
 	hits[i].hit_face = hit.hit_face;
 	hits[i].hit_t = hit.hit_t;
@@ -180,20 +198,23 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	if (pdf_val > 0) {
 		const float scattering_pdf = mat.scattering_pdf(rec, scattered);
 
+#ifndef DBG_RENDER
 		crec.origin = rec.hit_p;
 		crec.direction = scattered;
 		crec.color = mat.albedo*scattering_pdf / pdf_val;
 		crec.done = false;
-
+#else
 		// following code can be useful to debug rendering issues
-		//const uint max_dir = max_id(srec.scattered.direction);
-		//crec.color = (make_float3(
-		//	(max_dir == 0)*signum(srec.scattered.direction.x),
-		//	(max_dir == 1)*signum(srec.scattered.direction.y),
-		//	(max_dir == 2)*signum(srec.scattered.direction.z)
-		//) + 1) / 2;
-		//crec.color = (normalize(hit_n) + 1) / 2;
-		//crec.done = true;
+		const uint max_dir = max_id(scattered);
+		crec.color = (make_float3(
+			(max_dir == 0)*signum(scattered.x),
+			(max_dir == 1)*signum(scattered.y),
+			(max_dir == 2)*signum(scattered.z)
+		) + 1) / 2;
+		crec.color = (normalize(hit_n) + 1) / 2;
+		crec.done = true;
+#endif // !DBG_RENDER
+
 	} else {
 		crec.color = make_float3(0, 0, 0);
 		crec.done = true;
@@ -214,7 +235,7 @@ void renderer::start_kernel(const work_unit* wu) {
 #ifdef DBG_FILE
 	output_file->write((char*)wu->h_rays, wu->length() * sizeof(ray));
 #endif // DBG_FILE
-	hit_scene <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), d_heightmap, model->size, 0.1f, FLT_MAX, wu->d_hits);
+	hit_scene <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), d_heightmap, model->size, 0.1f, FLT_MAX, wu->d_hits, ray_tracing_id);
 #ifdef DBG_FILE
 	err(cudaMemcpy(wu->h_hits, wu->d_hits, wu->length() * sizeof(cu_hit), cudaMemcpyDeviceToHost), "copy hits from device to host");
 	output_file->write((char*)wu->h_hits, wu->length() * sizeof(cu_hit));
