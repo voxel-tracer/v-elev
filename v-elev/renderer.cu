@@ -121,7 +121,7 @@ inline void renderer::generate_ray(work_unit* wu, const uint sampleId, int x, in
 	wu->samples[local_ray_idx] = sample(get_pixelId(x, y));
 }
 
-__global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, float t_min, float t_max, cu_hit* hits, const uint ray_tracing_id)
+__global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, cu_hit* hits, const uint ray_tracing_id)
 {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if (i >= num_rays) return;
@@ -131,18 +131,18 @@ __global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned c
 	cu_hit hit;
 #ifdef DBG_TRACING
 	if (r->id == ray_tracing_id) {
-		if (!model.hit_trace(*r, t_min, t_max, hit)) {
+		if (!model.hit_trace(*r, hit)) {
 			hits[i].hit_face = NO_HIT;
 			return;
 		}
 	} else {
-		if (!model.hit(*r, t_min, t_max, hit)) {
+		if (!model.hit(*r, hit)) {
 			hits[i].hit_face = NO_HIT;
 			return;
 		}
 	}
 #else
-	if (!model.hit(*r, t_min, t_max, hit)) {
+	if (!model.hit(*r, hit)) {
 		hits[i].hit_face = NO_HIT;
 		return;
 }
@@ -235,7 +235,7 @@ void renderer::start_kernel(const work_unit* wu) {
 #ifdef DBG_FILE
 	output_file->write((char*)wu->h_rays, wu->length() * sizeof(ray));
 #endif // DBG_FILE
-	hit_scene <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), d_heightmap, model->size, 0.1f, FLT_MAX, wu->d_hits, ray_tracing_id);
+	hit_scene <<<blocksPerGrid, threadsPerBlock, 0, wu->stream >>>(wu->d_rays, wu->length(), d_heightmap, model->size, wu->d_hits, ray_tracing_id);
 #ifdef DBG_FILE
 	err(cudaMemcpy(wu->h_hits, wu->d_hits, wu->length() * sizeof(cu_hit), cudaMemcpyDeviceToHost), "copy hits from device to host");
 	output_file->write((char*)wu->h_hits, wu->length() * sizeof(cu_hit));

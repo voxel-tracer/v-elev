@@ -9,7 +9,7 @@
 #include "sun.h"
 
 //#define DBG_FILE
-#define DBG_RENDER
+//#define DBG_RENDER
 
 struct pixel {
 	uint samples = 0;

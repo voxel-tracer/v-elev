@@ -94,7 +94,7 @@ void city_scene(const char *highmap_file, camera **cam, sun **s, voxelModel** mo
 
 	*s = new sun(make_float3(700, 1400, 1400), 200, make_float3(50));
 	*model = new voxelModel(data, image_x, image_y);
-	*cam = new camera(make_float3(700), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
+	*cam = new camera(make_float3(500), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 }
 
 void call_from_thread(renderer& r, const uint unit_idx) {
@@ -195,8 +195,8 @@ int main(int argc, char** argv)
 	camera *cam;
 	voxelModel *model;
 	sun *s;
-	//city_scene(o.highmap_file.c_str(), &cam, &s, &model, float(nx) / float(ny));
-	test_scene0(&cam, &model, &s, float(nx) / float(ny));
+	city_scene(o.highmap_file.c_str(), &cam, &s, &model, float(nx) / float(ny));
+	//test_scene0(&cam, &model, &s, float(nx) / float(ny));
 	//test_scene1(&cam, &model, &s, float(nx) / float(ny));
 
 	if (model == NULL) {
