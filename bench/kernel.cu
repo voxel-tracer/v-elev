@@ -17,7 +17,7 @@
 #include "material.h"
 #include "human-readable.h"
 
-__global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, float t_min, float t_max, cu_hit* hits)
+__global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, cu_hit* hits)
 {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if (i >= num_rays) return;
@@ -25,7 +25,7 @@ __global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned c
 	const ray *r = &(rays[i]);
 	const voxelModel model(heightmap, model_size);
 	cu_hit hit;
-	if (!model.hit(*r, t_min, t_max, hit)) {
+	if (!model.hit(*r, hit)) {
 		hits[i].hit_face = NO_HIT;
 		return;
 	}
@@ -167,12 +167,12 @@ int main()
 
 		input_file.read((char*)rays, num_rays * sizeof(ray));
 		input_file.read((char*)hits, num_rays * sizeof(cu_hit));
-		//print_stats(hits, num_rays);
+		print_stats(hits, num_rays);
 
 		// copy rays to gpu and run kernel
 		clock_t begin = clock();
 		err(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays from host to device");
-		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, 0.1f, FLT_MAX, d_hits);
+		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, d_hits);
 		cudaDeviceSynchronize();
 		hit_duration += clock() - begin;
 								 

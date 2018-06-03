@@ -7,7 +7,7 @@
 #include "ray.h"
 
 struct voxelModel {
-	__host__ voxelModel(const unsigned char *hm, uint w, uint h): heightmap(hm) { 
+	__host__ voxelModel(const unsigned char *hm, uint w, uint h) : heightmap(hm) {
 		// compute max elevation
 		uint max_e = 0;
 		for (uint y = 0, idx = 0; y < h; y++) {
@@ -22,11 +22,10 @@ struct voxelModel {
 
 	__device__ voxelModel(const unsigned char *hm, const uint3& s) : heightmap(hm), size(s) { }
 
-	__device__ bool hitDist(const ray& r, float3& hit_min, float3& hit_max) const {
-		// min = (0, 0, 0), max = size
-		float tMin = -FLT_MAX;
-		float tMax = FLT_MAX;
+	__device__ bool hitDist(const ray& r, float3& hit_min) const {
 		float invD, t0, t1, tmp;
+		float tMin = EPS;
+		float tMax = FLT_MAX;
 		// x axis
 		invD = 1 / r.direction.x;
 		t0 = (0 - r.origin.x) * invD;
@@ -39,10 +38,9 @@ struct voxelModel {
 		tMin = t0 > tMin ? t0 : tMin;
 		tMax = t1 < tMax ? t1 : tMax;
 		hit_min.x = t0;
-		hit_max.x = t1;
-		if (tMax <= tMin) {
+		if (tMax <= tMin)
 			return false;
-		}
+
 		// y axis
 		invD = 1 / r.direction.y;
 		t0 = (0 - r.origin.y) * invD;
@@ -55,10 +53,9 @@ struct voxelModel {
 		tMin = t0 > tMin ? t0 : tMin;
 		tMax = t1 < tMax ? t1 : tMax;
 		hit_min.y = t0;
-		hit_max.y = t1;
-		if (tMax <= tMin) {
+		if (tMax <= tMin)
 			return false;
-		}
+
 		// z axis
 		invD = 1 / r.direction.z;
 		t0 = (0 - r.origin.z) * invD;
@@ -71,20 +68,17 @@ struct voxelModel {
 		tMin = t0 > tMin ? t0 : tMin;
 		tMax = t1 < tMax ? t1 : tMax;
 		hit_min.z = t0;
-		hit_max.z = t1;
-		if (tMax <= tMin) {
+		if (tMax <= tMin)
 			return false;
-		}
+
 		return true;
 	}
 
-	__device__ bool hit(const ray& r, float t_min, float t_max, cu_hit& hit) const {
-		float3u hit_min, hit_max;
-		hit_min.v = make_float3(t_min);
-		hit_max.v = make_float3(t_max);
-		if (!hitDist(r, hit_min.v, hit_max.v) || min(hit_max.v) < t_min) {
+	__device__ bool hit(const ray& r, cu_hit& hit) const {
+		//TODO I only need face and hit_min[face]
+		float3u hit_min;
+		if (!hitDist(r, hit_min.v))
 			return false;
-		}
 
 		float3u d; d.v = r.direction; //TODO make ray.direction float3u
 		int3u d_sign;
@@ -92,44 +86,33 @@ struct voxelModel {
 
 		// find which face was hit
 		int face = max_id(hit_min.v);
-		float minT = hit_min.a[face]; // t at intersection
-		float3 h_vec = r.point_at_parameter(minT); // intersected point
-		int3u voxel;
+		float minT = fmaxf(0, hit_min.a[face]); // t at intersection
+		const float3 h_vec = r.point_at_parameter(minT); // intersected point
+		int3u voxel; // intersected voxel at minT
 		voxel.v = make_int3(
 			h_vec.x + d_sign.v.x*EPS,
 			h_vec.y + d_sign.v.y*EPS,
 			h_vec.z + d_sign.v.z*EPS
-		); // intersected voxel
-
-		// compute tVec: how much we need to travel in each axis to hit next voxel
-		// next_voxel = voxel + step (+1 if step < 0)
-		// this is equivalent to
-		// next_voxel = voxel (+1 if step > 0)
-		float3u tVec;
-		//TODO if I just divide by 0 I will get +/- infinity, won't that be enough ?
-		tVec.v = make_float3(
-			(d_sign.v.x == 0 ? FLT_MAX : (voxel.v.x + (d_sign.v.x > 0 ? 1:0) - r.origin.x) / d.v.x),
-			(d_sign.v.y == 0 ? FLT_MAX : (voxel.v.y + (d_sign.v.y > 0 ? 1:0) - r.origin.y) / d.v.y),
-			(d_sign.v.z == 0 ? FLT_MAX : (voxel.v.z + (d_sign.v.z > 0 ? 1:0) - r.origin.z) / d.v.z)
 		);
 
-		// compute tDelta: how much we need to travel in each axis to move from one voxel to another
-		// final Vec3 tDelta = rD.abs().div(gridSize).inv();
-		float3u tDelta;
+		float3u tDelta; // how much we need to travel in each axis to move from one voxel to another
 		tDelta.v = 1 / fabs(d.v);
 
-		// remember tVec.get(face) is the intersection with the next voxel
-		// substract tDelta[face] to get the intersection with current voxel
-		while ((tVec.a[face] - tDelta.a[face] + EPS) < t_min || (!isVoxelFull(voxel.v) && (tVec.a[face] - EPS) <= hit_max.a[face])) {
+		float3u tVec; // how much we need to travel in each axis to hit next voxel 
+		tVec.v.x = fabsf(voxel.v.x - r.origin.x + ((d_sign.v.x + 1) >> 1))*tDelta.v.x;
+		tVec.v.y = fabsf(voxel.v.y - r.origin.y + ((d_sign.v.y + 1) >> 1))*tDelta.v.y;
+		tVec.v.z = fabsf(voxel.v.z - r.origin.z + ((d_sign.v.z + 1) >> 1))*tDelta.v.z;
+
+		//TODO just check if voxel is inside model instead of checking agains hit_max
+		while (isInside(voxel.v) && !isVoxelFull(voxel.v)) {
 			// we need to move enough to hit another voxel
 			face = min_id(tVec.v);
 			voxel.a[face] += d_sign.a[face];
 			tVec.a[face] += tDelta.a[face];
 		}
 
-		if (!isVoxelFull(voxel.v)) {
+		if (!isInside(voxel.v) || !isVoxelFull(voxel.v))
 			return false;
-		}
 
 		//COMPUTE HIT RECORD
 		hit.hit_t = tVec.a[face] - tDelta.a[face];
@@ -137,10 +120,12 @@ struct voxelModel {
 		return true;
 	}
 
-	__device__ bool isVoxelFull(const int3& voxel) const {
-		// if voxel outside bbox, its considered empty
+	__device__ bool isInside(const int3& voxel) const {
 		if (voxel.x < 0 || voxel.y < 0 || voxel.z < 0) return false;
 		if (voxel.x > size.x || voxel.y > size.y || voxel.z > size.z) return false;
+		return true;
+	}
+	__device__ bool isVoxelFull(const int3& voxel) const {
 		const int elevation = heightmap[voxel.z*size.x + voxel.x] + 1; // raise the model by 1 to get a floor we can intersect with
 		return voxel.y < elevation;
 	}
