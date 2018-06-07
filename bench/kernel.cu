@@ -50,14 +50,8 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 
 	if (hit.hit_face == NO_HIT) {
 		// no intersection with spheres, return sky color
-		if (s.pdf_value(r.origin, r.direction) > 0) {
-			crec.color = s.clr;
-			crec.done = true;
-		}
-		else {
-			crec.color = make_float3(0);
-			crec.done = true;
-		}
+		crec.done = true;
+		crec.color *= (s.pdf_value(r.origin, r.direction) > 0) ? s.clr : make_float3(0);
 		return;
 	}
 
@@ -82,20 +76,11 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 
 		crec.origin = hit_p;
 		crec.direction = scattered;
-		crec.color = albedo*scattering_pdf / pdf_val;
+		crec.color *= albedo*scattering_pdf / pdf_val;
 		crec.done = false;
-		// following code can be useful to debug rendering issues
-		//const uint max_dir = max_id(srec.scattered.direction);
-		//crec.color = (make_float3(
-		//	(max_dir == 0)*signum(srec.scattered.direction.x),
-		//	(max_dir == 1)*signum(srec.scattered.direction.y),
-		//	(max_dir == 2)*signum(srec.scattered.direction.z)
-		//) + 1) / 2;
-		//crec.color = (normalize(hit_n) + 1) / 2;
-		//crec.done = true;
 	}
 	else {
-		crec.color = make_float3(0, 0, 0);
+		crec.color = make_float3(0);
 		crec.done = true;
 	}
 }
@@ -261,7 +246,7 @@ void display_image(clr_rec *clrs, const uint nx, const uint ny, const uint spp) 
 }
 
 int main(int argc, char** argv) {
-	const uint nx = 500, ny = 500, spp = 128;
+	const uint nx = 500, ny = 500, spp = 32;
 	const uint num_rays = nx*ny*spp;
 	const uint threadsPerBlock = 128;
 	const uint blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;

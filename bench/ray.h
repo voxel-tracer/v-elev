@@ -32,12 +32,6 @@ struct clr_rec {
 	float3 origin;
 	float3 direction;
 	bool done = false;
-
-	clr_rec() {
-		color = make_float3(0, 0, 0);
-		origin = make_float3(0, 0, 0);
-		direction = make_float3(0, 0, 0);
-	}
 };
 
 #endif /* RAY_H_ */
