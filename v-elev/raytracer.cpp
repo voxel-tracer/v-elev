@@ -208,7 +208,7 @@ int main(int argc, char** argv)
 	// join the threads with the main thread
 	for (uint i = 0; i < num_threads; i++)
 		t[i].join();
-	const uint total_exec_time = double(clock() - begin) / CLOCKS_PER_SEC;
+	const float total_exec_time = double(clock() - begin) / CLOCKS_PER_SEC;
 	cout << "total execution took " << total_exec_time << endl;
 	uint total_rays = 0;
 	for (uint i = 0; i < num_threads; i++) {

@@ -243,7 +243,7 @@ void display_image(clr_rec *clrs, const uint nx, const uint ny, const uint spp) 
 }
 
 int main(int argc, char** argv) {
-	const uint nx = 500, ny = 500, spp = 32, max_depth = 50;
+	const uint nx = 500, ny = 500, spp = 64, max_depth = 10;
 	const uint num_rays = nx*ny*spp;
 	const uint threadsPerBlock = 128;
 	const uint blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;
@@ -268,7 +268,6 @@ int main(int argc, char** argv) {
 	// allocate all samples
 	ray* rays = new ray[num_rays];
 	clr_rec* clrs = new clr_rec[num_rays];
-
 	// allocate buffers on device
 	ray* d_rays = NULL;
 	err(cudaMalloc((void **)&d_rays, num_rays * sizeof(ray)), "allocate device d_rays");
@@ -279,50 +278,60 @@ int main(int argc, char** argv) {
 
 	// start by generating all primary rays
 	generate_rays(rays, c, nx, ny, spp);
-	// copy rays to gpu and run kernel
-	err(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays to device");
-	delete[] rays;
 
-	cudaEvent_t start, hit_done, color_done;
-	cudaEventCreate(&start);
+	err(cudaMemcpyAsync(d_clrs, clrs, num_rays * sizeof(clr_rec), cudaMemcpyHostToDevice), "copy clrs to device");
+	err(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays to device");
+
+	cudaEvent_t hit_start, hit_done, color_done;
+	cudaEventCreate(&hit_start);
 	cudaEventCreate(&hit_done);
 	cudaEventCreate(&color_done);
-
-	// intersect all primary rays with the scene
-	uint num_iter = 1;
-	cudaEventRecord(start);
-	hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, d_hits);
-	cudaEventRecord(hit_done);
-	simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_hits, d_clrs, num_iter, albedo, *s);
-	cudaEventRecord(color_done);
-	err(cudaMemcpy(clrs, d_clrs, num_rays * sizeof(clr_rec), cudaMemcpyDeviceToHost), "copy results from device to host");
-
 	float hit_duration_ms = 0;
 	float color_duration_ms = 0;
-	cudaEventElapsedTime(&hit_duration_ms, start, hit_done);
-	cudaEventElapsedTime(&color_duration_ms, hit_done, color_done);
+
+	const clock_t start = clock();
+	for (uint i = 0; i < max_depth; i++) {
+		cudaEventRecord(hit_start);
+		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, d_hits);
+		cudaEventRecord(hit_done);
+		simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_hits, d_clrs, i, albedo, *s);
+		cudaEventRecord(color_done);
+
+		cudaEventSynchronize(color_done);
+		float duration_ms = 0;
+		cudaEventElapsedTime(&duration_ms, hit_start, hit_done);
+		hit_duration_ms += duration_ms;
+		cudaEventElapsedTime(&duration_ms, hit_done, color_done);
+		color_duration_ms += duration_ms;
+	}
+	const float total_duration = (float)(clock() - start) / CLOCKS_PER_SEC;
+	std::cout << "total duration " << total_duration << " seconds" << std::endl;
+	std::cout << "  " << sscale(max_depth*num_rays / total_duration) << " rays/s" << std::endl;
+
+	err(cudaMemcpy(clrs, d_clrs, num_rays * sizeof(clr_rec), cudaMemcpyDeviceToHost), "copy results from device to host");
+
+	err(cudaFree(d_rays), "free device d_rays");
+	err(cudaFree(d_hits), "free device d_hits");
+	err(cudaFree(d_clrs), "free device d_clrs");
 
 	{
 		const float total_exec_time = hit_duration_ms / 1000;
 		if (total_exec_time > 0) {
 			std::cout << "hit_scene took " << total_exec_time << " seconds" << std::endl;
-			std::cout << "  " << sscale(num_iter*num_rays / total_exec_time) << " rays/s" << std::endl;
+			std::cout << "  " << sscale(max_depth*num_rays / total_exec_time) << " rays/s" << std::endl;
 		}
 	}
 	{
 		const float total_exec_time = color_duration_ms / 1000;
 		if (total_exec_time > 0) {
 			std::cout << "simple_color took " << total_exec_time << " seconds" << std::endl;
-			std::cout << "  " << sscale(num_iter*num_rays / total_exec_time) << " rays/s" << std::endl;
+			std::cout << "  " << sscale(max_depth*num_rays / total_exec_time) << " rays/s" << std::endl;
 		}
 	}
-	err(cudaFree(d_rays), "free device d_rays");
-	err(cudaFree(d_hits), "free device d_hits");
-	err(cudaFree(d_clrs), "free device d_clrs");
 
 	display_image(clrs, nx, ny, spp);
-
 	delete[] clrs;
+	delete[] rays;
 
     return 0;
 }
