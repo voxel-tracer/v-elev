@@ -1,5 +1,4 @@
-#ifndef UTILS_H_
-#define UTILS_H_
+#pragma once
 
 #define M_PI       3.14159265358979323846   // pi
 #define M_PI_2     1.57079632679489661923   // pi/2
@@ -9,19 +8,6 @@
 
 #include <vector_functions.h>
 #include <helper_math.h>
-
-//#define seed_t uint&
-//__device__ uint XorShift32(uint& state) {
-//	uint x = state;
-//	x ^= x << 13;
-//	x ^= x >> 17;
-//	x ^= x << 15;
-//	state = x;
-//	return x;
-//}
-//__device__ float RandomFloat01(uint& state) {
-//	return (XorShift32(state) & 0xFFFFFF) / 16777216.0f;
-//}
 
 #include <curand_kernel.h>
 #define seed_t curandStatePhilox4_32_10_t*
@@ -95,9 +81,6 @@ __device__ float schlick(float cosine, float ref_idx) {
 	r0 = r0*r0;
 	return r0 + (1 - r0)*pow((1 - cosine), 5);
 }
-float3 hex2float3(const int hexval) {
-	return make_float3(((hexval >> 16) & 0xFF) / 255.0, ((hexval >> 8) & 0xFF) / 255.0, (hexval & 0xFF) / 255.0);
-}
 __device__ float squared_length(const float3& v) {
 	return dot(v, v);
 }
@@ -116,5 +99,3 @@ __device__ uint max_id(const float3& v) {
 __device__ uint min_id(const float3& v) {
 	return v.x <= v.y ? (v.x <= v.z ? 0 : 2) : (v.y <= v.z ? 1 : 2);
 }
-
-#endif /* UTILS_H_ */
