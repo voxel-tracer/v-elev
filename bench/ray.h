@@ -28,9 +28,7 @@ struct sample {
 };
 
 struct clr_rec {
-	float3 color;
-	float3 origin;
-	float3 direction;
+	float3 color = make_float3(1);
 	bool done = false;
 };
 

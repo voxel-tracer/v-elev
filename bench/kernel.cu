@@ -39,14 +39,16 @@ __global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned c
 	hits[i].hit_t = hit.hit_t;
 }
 
-__global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
+__global__ void simple_color(ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
 
 	const int ray_idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (ray_idx >= num_rays) return;
 
-	const ray& r = rays[ray_idx];
-	const cu_hit hit(hits[ray_idx]);
 	clr_rec& crec = clrs[ray_idx];
+	if (crec.done) return; // nothing more to do
+
+	ray& r = rays[ray_idx];
+	const cu_hit hit(hits[ray_idx]);
 
 	if (hit.hit_face == NO_HIT) {
 		// no intersection with spheres, return sky color
@@ -74,8 +76,8 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	if (pdf_val > 0) {
 		const float scattering_pdf = fmaxf(0, dot(hit_n, scattered) / M_PI);
 
-		crec.origin = hit_p;
-		crec.direction = scattered;
+		r.origin = hit_p;
+		r.direction = scattered;
 		crec.color *= albedo*scattering_pdf / pdf_val;
 		crec.done = false;
 	}
@@ -85,25 +87,21 @@ __global__ void simple_color(const ray* rays, const uint num_rays, const cu_hit*
 	}
 }
 
-__global__ void debug_color(const ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
+__global__ void debug_color(ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
 
 	const int ray_idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (ray_idx >= num_rays) return;
 
-	const ray& r = rays[ray_idx];
-	const cu_hit hit(hits[ray_idx]);
 	clr_rec& crec = clrs[ray_idx];
+	if (crec.done) return; // nothing more to do
+
+	ray& r = rays[ray_idx];
+	const cu_hit hit(hits[ray_idx]);
 
 	if (hit.hit_face == NO_HIT) {
 		// no intersection with spheres, return sky color
-		if (s.pdf_value(r.origin, r.direction) > 0) {
-			crec.color = s.clr;
-			crec.done = true;
-		}
-		else {
-			crec.color = make_float3(0);
-			crec.done = true;
-		}
+		crec.done = true;
+		crec.color *= (s.pdf_value(r.origin, r.direction) > 0) ? s.clr : make_float3(0);
 		return;
 	}
 
@@ -126,7 +124,6 @@ __global__ void debug_color(const ray* rays, const uint num_rays, const cu_hit* 
 	if (pdf_val > 0) {
 		const float scattering_pdf = fmaxf(0, dot(hit_n, scattered) / M_PI);
 
-		// following code can be useful to debug rendering issues
 		const uint max_dir = max_id(scattered);
 		crec.color = (make_float3(
 			(max_dir == 0)*signum(scattered.x),
@@ -137,7 +134,7 @@ __global__ void debug_color(const ray* rays, const uint num_rays, const cu_hit* 
 		crec.done = true;
 	}
 	else {
-		crec.color = make_float3(0, 0, 0);
+		crec.color = make_float3(0);
 		crec.done = true;
 	}
 }
@@ -246,7 +243,7 @@ void display_image(clr_rec *clrs, const uint nx, const uint ny, const uint spp) 
 }
 
 int main(int argc, char** argv) {
-	const uint nx = 500, ny = 500, spp = 32;
+	const uint nx = 500, ny = 500, spp = 32, max_depth = 50;
 	const uint num_rays = nx*ny*spp;
 	const uint threadsPerBlock = 128;
 	const uint blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;
@@ -268,10 +265,8 @@ int main(int argc, char** argv) {
 	err(cudaMalloc((void **)&d_heightmap, model->size.x*model->size.z * sizeof(unsigned char)), "allocate device d_heightmap");
 	err(cudaMemcpy(d_heightmap, model->heightmap, model->size.x*model->size.z * sizeof(unsigned char), cudaMemcpyHostToDevice), "copy heightmap from host to device");
 
-	// allocate enough rays to hold all rays
+	// allocate all samples
 	ray* rays = new ray[num_rays];
-	cu_hit* hits = new cu_hit[num_rays];
-	//TODO allocate these later, after we are done intersecting all primary rays
 	clr_rec* clrs = new clr_rec[num_rays];
 
 	// allocate buffers on device
@@ -284,41 +279,43 @@ int main(int argc, char** argv) {
 
 	// start by generating all primary rays
 	generate_rays(rays, c, nx, ny, spp);
+	// copy rays to gpu and run kernel
+	err(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays to device");
+	delete[] rays;
+
+	cudaEvent_t start, hit_done, color_done;
+	cudaEventCreate(&start);
+	cudaEventCreate(&hit_done);
+	cudaEventCreate(&color_done);
 
 	// intersect all primary rays with the scene
 	uint num_iter = 1;
-	clock_t hit_duration = 0;
-	// copy rays to gpu and run kernel
-	err(cudaMemcpy(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays from host to device");
-	clock_t begin = clock();
-	//err(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays from host to device");
+	cudaEventRecord(start);
 	hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, d_hits);
-	cudaDeviceSynchronize();
-	hit_duration += clock() - begin;
-
-	// compute scattered rays/color for each primary ray
-	clock_t color_duration = 0;
-	begin = clock();
-	debug_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_hits, d_clrs, num_iter, albedo, *s);
+	cudaEventRecord(hit_done);
+	simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_hits, d_clrs, num_iter, albedo, *s);
+	cudaEventRecord(color_done);
 	err(cudaMemcpy(clrs, d_clrs, num_rays * sizeof(clr_rec), cudaMemcpyDeviceToHost), "copy results from device to host");
-	color_duration += clock() - begin;
+
+	float hit_duration_ms = 0;
+	float color_duration_ms = 0;
+	cudaEventElapsedTime(&hit_duration_ms, start, hit_done);
+	cudaEventElapsedTime(&color_duration_ms, hit_done, color_done);
 
 	{
-		const float total_exec_time = (float) hit_duration / CLOCKS_PER_SEC;
+		const float total_exec_time = hit_duration_ms / 1000;
 		if (total_exec_time > 0) {
 			std::cout << "hit_scene took " << total_exec_time << " seconds" << std::endl;
 			std::cout << "  " << sscale(num_iter*num_rays / total_exec_time) << " rays/s" << std::endl;
 		}
 	}
 	{
-		const float total_exec_time = (float)color_duration / CLOCKS_PER_SEC;
+		const float total_exec_time = color_duration_ms / 1000;
 		if (total_exec_time > 0) {
 			std::cout << "simple_color took " << total_exec_time << " seconds" << std::endl;
 			std::cout << "  " << sscale(num_iter*num_rays / total_exec_time) << " rays/s" << std::endl;
 		}
 	}
-	delete[] rays;
-	delete[] hits;
 	err(cudaFree(d_rays), "free device d_rays");
 	err(cudaFree(d_hits), "free device d_hits");
 	err(cudaFree(d_clrs), "free device d_clrs");
