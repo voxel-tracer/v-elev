@@ -21,6 +21,13 @@
 #include "material.h"
 #include "human-readable.h"
 
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true) {
+	if (code != cudaSuccess) {
+		fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+		if (abort) exit(code);
+	}
+}
 
 __global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, cu_hit* hits)
 {
@@ -139,13 +146,6 @@ __global__ void debug_color(ray* rays, const uint num_rays, const cu_hit* hits, 
 	}
 }
 
-void err(cudaError_t err, char *msg) {
-	if (err != cudaSuccess) {
-		fprintf(stderr, "Failed to %s (error code %s)!\n", msg, cudaGetErrorString(err));
-		exit(EXIT_FAILURE);
-	}
-}
-
 void city_scene(camera **cam, sun **s, voxelModel** model, float aspect) {
 	// load heightmap image
 	int image_x, image_y, image_n;
@@ -195,7 +195,7 @@ void display_image(clr_rec *clrs, const uint nx, const uint ny, const uint spp) 
 			// compute average of all samples
 			float3 color;
 			for (uint s = 0; s < spp; s++, ++ray_idx)
-				color += clrs[ray_idx].color;
+				if (clrs[ray_idx].done) color += clrs[ray_idx].color;
 			color = color / spp;
 			unsigned char red = min(255, int(255.99*color.x));
 			unsigned char green = min(255, int(255.99*color.y));
@@ -243,11 +243,11 @@ void display_image(clr_rec *clrs, const uint nx, const uint ny, const uint spp) 
 }
 
 int main(int argc, char** argv) {
-	const uint nx = 500, ny = 500, spp = 64, max_depth = 10;
+	const uint nx = 500, ny = 500, spp = 64, max_depth = 2;
 	const uint num_rays = nx*ny*spp;
-	const uint threadsPerBlock = 128;
+	const uint threadsPerBlock = 64;
 	const uint blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;
-
+	const bool show_kernels_perf = false;
 	// load voxel model
 	voxelModel *model;
 	sun *s;
@@ -262,66 +262,78 @@ int main(int argc, char** argv) {
 
 	// copy model to gpu
 	unsigned char* d_heightmap = NULL;
-	err(cudaMalloc((void **)&d_heightmap, model->size.x*model->size.z * sizeof(unsigned char)), "allocate device d_heightmap");
-	err(cudaMemcpy(d_heightmap, model->heightmap, model->size.x*model->size.z * sizeof(unsigned char), cudaMemcpyHostToDevice), "copy heightmap from host to device");
+	gpuErrchk(cudaMalloc((void **)&d_heightmap, model->size.x*model->size.z * sizeof(unsigned char)));
+	gpuErrchk(cudaMemcpy(d_heightmap, model->heightmap, model->size.x*model->size.z * sizeof(unsigned char), cudaMemcpyHostToDevice));
 
 	// allocate all samples
 	ray* rays = new ray[num_rays];
 	clr_rec* clrs = new clr_rec[num_rays];
 	// allocate buffers on device
 	ray* d_rays = NULL;
-	err(cudaMalloc((void **)&d_rays, num_rays * sizeof(ray)), "allocate device d_rays");
+	gpuErrchk(cudaMalloc((void **)&d_rays, num_rays * sizeof(ray)));
 	cu_hit* d_hits = NULL;
-	err(cudaMalloc((void **)&d_hits, num_rays * sizeof(cu_hit)), "allocate device d_hits");
+	gpuErrchk(cudaMalloc((void **)&d_hits, num_rays * sizeof(cu_hit)));
 	clr_rec* d_clrs = NULL;
-	err(cudaMalloc((void **)&d_clrs, num_rays * sizeof(clr_rec)), "allocate device d_clrs");
+	gpuErrchk(cudaMalloc((void **)&d_clrs, num_rays * sizeof(clr_rec)));
 
 	// start by generating all primary rays
 	generate_rays(rays, c, nx, ny, spp);
 
-	err(cudaMemcpyAsync(d_clrs, clrs, num_rays * sizeof(clr_rec), cudaMemcpyHostToDevice), "copy clrs to device");
-	err(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice), "copy rays to device");
+	gpuErrchk(cudaMemcpyAsync(d_clrs, clrs, num_rays * sizeof(clr_rec), cudaMemcpyHostToDevice));
+	gpuErrchk(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice));
 
-	cudaEvent_t hit_start, hit_done, color_done;
-	cudaEventCreate(&hit_start);
-	cudaEventCreate(&hit_done);
-	cudaEventCreate(&color_done);
+	cudaEvent_t hit_start, hit_done, color_done, iter_done;
+	if (show_kernels_perf) {
+		gpuErrchk(cudaEventCreate(&hit_start));
+		gpuErrchk(cudaEventCreate(&hit_done));
+		gpuErrchk(cudaEventCreate(&color_done));
+	}
+	else {
+		gpuErrchk(cudaEventCreate(&iter_done));
+	}
 	float hit_duration_ms = 0;
 	float color_duration_ms = 0;
 
 	const clock_t start = clock();
 	for (uint i = 0; i < max_depth; i++) {
-		cudaEventRecord(hit_start);
+		if (show_kernels_perf) gpuErrchk(cudaEventRecord(hit_start));
 		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, d_hits);
-		cudaEventRecord(hit_done);
+		gpuErrchk(cudaPeekAtLastError());
+		if (show_kernels_perf) gpuErrchk(cudaEventRecord(hit_done));
 		simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_hits, d_clrs, i, albedo, *s);
-		cudaEventRecord(color_done);
+		gpuErrchk(cudaPeekAtLastError());
+		if (show_kernels_perf) gpuErrchk(cudaEventRecord(color_done));
+		if (!show_kernels_perf)	gpuErrchk(cudaEventRecord(iter_done));
 
-		cudaEventSynchronize(color_done);
-		float duration_ms = 0;
-		cudaEventElapsedTime(&duration_ms, hit_start, hit_done);
-		hit_duration_ms += duration_ms;
-		cudaEventElapsedTime(&duration_ms, hit_done, color_done);
-		color_duration_ms += duration_ms;
+		if (show_kernels_perf) {
+			gpuErrchk(cudaEventSynchronize(color_done));
+			float duration_ms = 0;
+			gpuErrchk(cudaEventElapsedTime(&duration_ms, hit_start, hit_done));
+			hit_duration_ms += duration_ms;
+			gpuErrchk(cudaEventElapsedTime(&duration_ms, hit_done, color_done));
+			color_duration_ms += duration_ms;
+		} else {
+			gpuErrchk(cudaEventSynchronize(iter_done));
+		}
 	}
 	const float total_duration = (float)(clock() - start) / CLOCKS_PER_SEC;
 	std::cout << "total duration " << total_duration << " seconds" << std::endl;
 	std::cout << "  " << sscale(max_depth*num_rays / total_duration) << " rays/s" << std::endl;
 
-	err(cudaMemcpy(clrs, d_clrs, num_rays * sizeof(clr_rec), cudaMemcpyDeviceToHost), "copy results from device to host");
+	gpuErrchk(cudaMemcpy(clrs, d_clrs, num_rays * sizeof(clr_rec), cudaMemcpyDeviceToHost));
 
-	err(cudaFree(d_rays), "free device d_rays");
-	err(cudaFree(d_hits), "free device d_hits");
-	err(cudaFree(d_clrs), "free device d_clrs");
+	gpuErrchk(cudaFree(d_rays));
+	gpuErrchk(cudaFree(d_hits));
+	gpuErrchk(cudaFree(d_clrs));
 
-	{
+	if (show_kernels_perf) {
 		const float total_exec_time = hit_duration_ms / 1000;
 		if (total_exec_time > 0) {
 			std::cout << "hit_scene took " << total_exec_time << " seconds" << std::endl;
 			std::cout << "  " << sscale(max_depth*num_rays / total_exec_time) << " rays/s" << std::endl;
 		}
 	}
-	{
+	if (show_kernels_perf) {
 		const float total_exec_time = color_duration_ms / 1000;
 		if (total_exec_time > 0) {
 			std::cout << "simple_color took " << total_exec_time << " seconds" << std::endl;
