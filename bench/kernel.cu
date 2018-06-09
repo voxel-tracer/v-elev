@@ -20,6 +20,7 @@
 #include "voxel_model.h"
 #include "material.h"
 #include "human-readable.h"
+#include "options.h"
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true) {
@@ -243,11 +244,14 @@ void display_image(clr_rec *clrs, const uint nx, const uint ny, const uint spp) 
 }
 
 int main(int argc, char** argv) {
-	const uint nx = 500, ny = 500, spp = 64, max_depth = 2;
+	options o;
+	if (!parse_args(o, argc, argv)) return;
+
+	const uint nx = o.nx, ny = o.ny, spp = o.ns, max_depth = o.max_depth;
 	const uint num_rays = nx*ny*spp;
 	const uint threadsPerBlock = 64;
 	const uint blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;
-	const bool show_kernels_perf = false;
+
 	// load voxel model
 	voxelModel *model;
 	sun *s;
@@ -283,7 +287,7 @@ int main(int argc, char** argv) {
 	gpuErrchk(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice));
 
 	cudaEvent_t hit_start, hit_done, color_done, iter_done;
-	if (show_kernels_perf) {
+	if (o.kernel_perf) {
 		gpuErrchk(cudaEventCreate(&hit_start));
 		gpuErrchk(cudaEventCreate(&hit_done));
 		gpuErrchk(cudaEventCreate(&color_done));
@@ -296,29 +300,31 @@ int main(int argc, char** argv) {
 
 	const clock_t start = clock();
 	for (uint i = 0; i < max_depth; i++) {
-		if (show_kernels_perf) gpuErrchk(cudaEventRecord(hit_start));
+		if (o.kernel_perf) gpuErrchk(cudaEventRecord(hit_start));
 		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, d_hits);
 		gpuErrchk(cudaPeekAtLastError());
-		if (show_kernels_perf) gpuErrchk(cudaEventRecord(hit_done));
+		if (o.kernel_perf) gpuErrchk(cudaEventRecord(hit_done));
 		simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_hits, d_clrs, i, albedo, *s);
 		gpuErrchk(cudaPeekAtLastError());
-		if (show_kernels_perf) gpuErrchk(cudaEventRecord(color_done));
-		if (!show_kernels_perf)	gpuErrchk(cudaEventRecord(iter_done));
+		if (o.kernel_perf) gpuErrchk(cudaEventRecord(color_done));
+		if (!o.kernel_perf)	gpuErrchk(cudaEventRecord(iter_done));
 
-		if (show_kernels_perf) {
+		if (o.kernel_perf) {
 			gpuErrchk(cudaEventSynchronize(color_done));
 			float duration_ms = 0;
 			gpuErrchk(cudaEventElapsedTime(&duration_ms, hit_start, hit_done));
 			hit_duration_ms += duration_ms;
+			if (o.per_iter_perf && duration_ms > 0) std::cout << " hit_scene " << sscale(num_rays*1000.0 / duration_ms) << " rays/s" << std::endl;
 			gpuErrchk(cudaEventElapsedTime(&duration_ms, hit_done, color_done));
 			color_duration_ms += duration_ms;
+			if (o.per_iter_perf && duration_ms > 0) std::cout << " simple_color " << sscale(num_rays*1000.0 / duration_ms) << " rays/s" << std::endl;
 		} else {
 			gpuErrchk(cudaEventSynchronize(iter_done));
 		}
 	}
-	const float total_duration = (float)(clock() - start) / CLOCKS_PER_SEC;
-	std::cout << "total duration " << total_duration << " seconds" << std::endl;
-	std::cout << "  " << sscale(max_depth*num_rays / total_duration) << " rays/s" << std::endl;
+	const float total_duration_ms = clock() - start;
+	std::cout << "total duration " << (total_duration_ms / 1000.0) << " seconds" << std::endl;
+	std::cout << "  " << sscale(max_depth*num_rays*1000.0 / total_duration_ms) << " rays/s" << std::endl;
 
 	gpuErrchk(cudaMemcpy(clrs, d_clrs, num_rays * sizeof(clr_rec), cudaMemcpyDeviceToHost));
 
@@ -326,22 +332,19 @@ int main(int argc, char** argv) {
 	gpuErrchk(cudaFree(d_hits));
 	gpuErrchk(cudaFree(d_clrs));
 
-	if (show_kernels_perf) {
-		const float total_exec_time = hit_duration_ms / 1000;
-		if (total_exec_time > 0) {
-			std::cout << "hit_scene took " << total_exec_time << " seconds" << std::endl;
-			std::cout << "  " << sscale(max_depth*num_rays / total_exec_time) << " rays/s" << std::endl;
+	if (o.kernel_perf) {
+		if (hit_duration_ms > 0) {
+			std::cout << "hit_scene took " << (hit_duration_ms / 1000.0) << " seconds" << std::endl;
+			std::cout << "  " << sscale(max_depth*num_rays*1000.0 / hit_duration_ms) << " rays/s" << std::endl;
 		}
-	}
-	if (show_kernels_perf) {
-		const float total_exec_time = color_duration_ms / 1000;
-		if (total_exec_time > 0) {
-			std::cout << "simple_color took " << total_exec_time << " seconds" << std::endl;
-			std::cout << "  " << sscale(max_depth*num_rays / total_exec_time) << " rays/s" << std::endl;
+		if (color_duration_ms > 0) {
+			std::cout << "color_scene took " << (color_duration_ms / 1000.0) << " seconds" << std::endl;
+			std::cout << "  " << sscale(max_depth*num_rays*1000.0 / color_duration_ms) << " rays/s" << std::endl;
 		}
 	}
 
-	display_image(clrs, nx, ny, spp);
+	if (o.show_image) display_image(clrs, nx, ny, spp);
+
 	delete[] clrs;
 	delete[] rays;
 

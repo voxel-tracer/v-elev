@@ -178,12 +178,14 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
     <CudaCompile Include="kernel.cu" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="argh.h" />
     <ClInclude Include="camera.h" />
     <ClInclude Include="common.h" />
     <ClInclude Include="cpu_utils.h" />
     <ClInclude Include="human-readable.h" />
     <ClInclude Include="material.h" />
     <ClInclude Include="onb.h" />
+    <ClInclude Include="options.h" />
     <ClInclude Include="pdf.h" />
     <ClInclude Include="ray.h" />
     <ClInclude Include="sun.h" />
