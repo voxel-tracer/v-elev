@@ -78,7 +78,7 @@ __global__ void simple_color(ray* rays, const uint num_rays, const cu_hit* hits,
 	mixture_pdf p(&plight, &scatter_pdf);
 
 	curandStatePhilox4_32_10_t lseed;
-	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &lseed);
+	curand_init(0, ray_idx / 64, (ray_idx % 64), &lseed);
 	const float3 scattered(p.generate(&lseed));
 	const float pdf_val = p.value(scattered);
 	if (pdf_val > 0) {
@@ -88,58 +88,6 @@ __global__ void simple_color(ray* rays, const uint num_rays, const cu_hit* hits,
 		r.direction = scattered;
 		crec.color *= albedo*scattering_pdf / pdf_val;
 		crec.done = false;
-	}
-	else {
-		crec.color = make_float3(0);
-		crec.done = true;
-	}
-}
-
-__global__ void debug_color(ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
-
-	const int ray_idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (ray_idx >= num_rays) return;
-
-	clr_rec& crec = clrs[ray_idx];
-	if (crec.done) return; // nothing more to do
-
-	ray& r = rays[ray_idx];
-	const cu_hit hit(hits[ray_idx]);
-
-	if (hit.hit_face == NO_HIT) {
-		// no intersection with spheres, return sky color
-		crec.done = true;
-		crec.color *= (s.pdf_value(r.origin, r.direction) > 0) ? s.clr : make_float3(0);
-		return;
-	}
-
-	const float3 hit_n = make_float3(
-		-1 * (hit.hit_face == X)*signum(r.direction.x),
-		-1 * (hit.hit_face == Y)*signum(r.direction.y),
-		-1 * (hit.hit_face == Z)*signum(r.direction.z)
-	);
-
-	cosine_pdf scatter_pdf(hit_n);
-
-	const float3 hit_p(r.point_at_parameter(hit.hit_t));
-	sun_pdf plight(&s, hit_p);
-	mixture_pdf p(&plight, &scatter_pdf);
-
-	curandStatePhilox4_32_10_t lseed;
-	curand_init(0, seed*blockDim.x + threadIdx.x, 0, &lseed);
-	const float3 scattered(p.generate(&lseed));
-	const float pdf_val = p.value(scattered);
-	if (pdf_val > 0) {
-		const float scattering_pdf = fmaxf(0, dot(hit_n, scattered) / M_PI);
-
-		const uint max_dir = max_id(scattered);
-		crec.color = (make_float3(
-			(max_dir == 0)*signum(scattered.x),
-			(max_dir == 1)*signum(scattered.y),
-			(max_dir == 2)*signum(scattered.z)
-		) + 1) / 2;
-		crec.color = (normalize(hit_n) + 1) / 2;
-		crec.done = true;
 	}
 	else {
 		crec.color = make_float3(0);
