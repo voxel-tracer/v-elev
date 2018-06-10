@@ -30,21 +30,22 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort =
 	}
 }
 
-__global__ void hit_scene(const ray* rays, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, cu_hit* hits)
+__global__ void hit_scene(const ray* rays, const uint ray_offset, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, cu_hit* hits)
 {
-	int i = blockDim.x * blockIdx.x + threadIdx.x;
-	if (i >= num_rays) return;
+	int ray_idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (ray_idx >= num_rays) return;
+	ray_idx += ray_offset;
 
-	const ray *r = &(rays[i]);
+	const ray *r = &(rays[ray_idx]);
 	const voxelModel model(heightmap, model_size);
 	cu_hit hit;
 	if (!model.hit(*r, hit)) {
-		hits[i].hit_face = NO_HIT;
+		hits[ray_idx].hit_face = NO_HIT;
 		return;
 	}
 
-	hits[i].hit_face = hit.hit_face;
-	hits[i].hit_t = hit.hit_t;
+	hits[ray_idx].hit_face = hit.hit_face;
+	hits[ray_idx].hit_t = hit.hit_t;
 }
 
 __global__ void simple_color(ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
@@ -195,10 +196,9 @@ int main(int argc, char** argv) {
 	options o;
 	if (!parse_args(o, argc, argv)) return;
 
-	const uint nx = o.nx, ny = o.ny, spp = o.ns, max_depth = o.max_depth;
+	const uint nx = o.nx, ny = o.ny, spp = o.spp, max_depth = o.max_depth;
 	const uint num_rays = nx*ny*spp;
 	const uint threadsPerBlock = 64;
-	const uint blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;
 
 	// load voxel model
 	voxelModel *model;
@@ -249,10 +249,19 @@ int main(int argc, char** argv) {
 	const clock_t start = clock();
 	for (uint i = 0; i < max_depth; i++) {
 		if (o.kernel_perf) gpuErrchk(cudaEventRecord(hit_start));
-		hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_heightmap, model->size, d_hits);
+		{
+			const uint rays_per_strip = num_rays / o.num_strips;
+			const uint blocksPerGrid = ceilf(rays_per_strip / threadsPerBlock);
+			for (uint j = 0; j < o.num_strips; j++) {
+				hit_scene << <blocksPerGrid, threadsPerBlock, 0 >> > (d_rays, rays_per_strip*j, rays_per_strip*(j+1), d_heightmap, model->size, d_hits);
+			}
+		}
 		gpuErrchk(cudaPeekAtLastError());
 		if (o.kernel_perf) gpuErrchk(cudaEventRecord(hit_done));
-		simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>>(d_rays, num_rays, d_hits, d_clrs, i, albedo, *s);
+		{
+			const uint blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;
+			simple_color << <blocksPerGrid, threadsPerBlock, 0 >> > (d_rays, num_rays, d_hits, d_clrs, i, albedo, *s);
+		}
 		gpuErrchk(cudaPeekAtLastError());
 		if (o.kernel_perf) gpuErrchk(cudaEventRecord(color_done));
 		if (!o.kernel_perf)	gpuErrchk(cudaEventRecord(iter_done));
