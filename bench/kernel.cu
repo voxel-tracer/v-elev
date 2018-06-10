@@ -53,7 +53,7 @@ __global__ void hit_scene(paths paths, const uint path_offset, const uint num_pa
 	paths.hit_ts[path_idx] = hit.hit_t;
 }
 
-__global__ void simple_color(paths paths, const uint num_paths, const uint seed, const float3 albedo, const sun s, const uint spp) {
+__global__ void simple_color(paths paths, const uint num_paths, const uint seed, const uint iteration, const float3 albedo, const sun s, const uint spp) {
 
 	const int path_idx = blockDim.x * blockIdx.x + threadIdx.x;
 	if (path_idx >= num_paths) return;
@@ -91,7 +91,12 @@ __global__ void simple_color(paths paths, const uint num_paths, const uint seed,
 	mixture_pdf p(&plight, &scatter_pdf);
 
 	curandStatePhilox4_32_10_t lseed;
-	curand_init(0, path_idx / spp, (path_idx % spp), &lseed);
+	const uint pixel_idx = path_idx / spp;
+	const uint sample_idx = path_idx % spp;
+	curand_init(seed,
+		pixel_idx, // different subsequence per pixel
+		iteration*spp * 5 + sample_idx * 5, // we assume each sample generates 5 random numbers per iteration
+		&lseed);
 	const float3 scattered(p.generate(&lseed));
 	const float pdf_val = p.value(scattered);
 	if (pdf_val > 0) {
@@ -126,7 +131,7 @@ void city_scene(camera **cam, sun **s, voxelModel** model, float aspect) {
 		return;
 	}
 
-	*cam = new camera(make_float3(700), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
+	*cam = new camera(make_float3(500), make_float3(image_x / 2, 0, image_y / 2), make_float3(0, 1, 0), 20, aspect, 0, 1.0);
 	*s = new sun(make_float3(700, 1400, 1400), 200, make_float3(50));
 	*model = new voxelModel(data, image_x, image_y);
 }
@@ -345,7 +350,7 @@ int main(int argc, char** argv) {
 	float color_duration_ms = 0;
 
 	const clock_t start = clock();
-	for (uint i = 0; i < max_depth; i++) {
+	for (uint iteration = 0; iteration < max_depth; iteration++) {
 		if (o.kernel_perf) gpuErrchk(cudaEventRecord(hit_start));
 		{
 			const uint rays_per_strip = num_rays / o.num_strips;
@@ -358,7 +363,7 @@ int main(int argc, char** argv) {
 		if (o.kernel_perf) gpuErrchk(cudaEventRecord(hit_done));
 		{
 			const uint blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;
-			simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>> (p, num_rays, i, albedo, *s, spp);
+			simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>> (p, num_rays, 0, iteration, albedo, *s, spp);
 		}
 		gpuErrchk(cudaPeekAtLastError());
 		if (o.kernel_perf) gpuErrchk(cudaEventRecord(color_done));
