@@ -36,6 +36,7 @@ struct cu_hit {
 
 	__host__ __device__ cu_hit() {}
 	__device__ cu_hit(const cu_hit& h) : hit_t(h.hit_t), hit_face(h.hit_face) {}
+	__device__ cu_hit(const float t, const uint face) : hit_t(t), hit_face(face) {}
 };
 
 __device__ float3 random_cosine_direction(seed_t seed) {

@@ -15,6 +15,7 @@
 #undef main
 
 #include "utils.h"
+#include "path.h"
 #include "ray.h"
 #include "camera.h"
 #include "voxel_model.h"
@@ -30,39 +31,50 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort =
 	}
 }
 
-__global__ void hit_scene(const ray* rays, const uint ray_offset, const uint num_rays, const unsigned char* heightmap, const uint3 model_size, cu_hit* hits)
+__global__ void hit_scene(paths paths, const uint path_offset, const uint num_paths, const unsigned char* heightmap, const uint3 model_size)
 {
-	int ray_idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (ray_idx >= num_rays) return;
-	ray_idx += ray_offset;
+	uint path_idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (path_idx >= num_paths) return;
+	path_idx += path_offset;
 
-	const ray *r = &(rays[ray_idx]);
+	if (paths.done[path_idx]) return;
+
+	const ray r(
+		make_float3(paths.oxs[path_idx], paths.oys[path_idx], paths.ozs[path_idx]),
+		make_float3(paths.dxs[path_idx], paths.dys[path_idx], paths.dzs[path_idx]));
 	const voxelModel model(heightmap, model_size);
 	cu_hit hit;
-	if (!model.hit(*r, hit)) {
-		hits[ray_idx].hit_face = NO_HIT;
+	if (!model.hit(r, hit)) {
+		paths.hit_faces[path_idx] = NO_HIT;
 		return;
 	}
 
-	hits[ray_idx].hit_face = hit.hit_face;
-	hits[ray_idx].hit_t = hit.hit_t;
+	paths.hit_faces[path_idx] = hit.hit_face;
+	paths.hit_ts[path_idx] = hit.hit_t;
 }
 
-__global__ void simple_color(ray* rays, const uint num_rays, const cu_hit* hits, clr_rec* clrs, const uint seed, const float3 albedo, const sun s) {
+__global__ void simple_color(paths paths, const uint num_paths, const uint seed, const float3 albedo, const sun s, const uint spp) {
 
-	const int ray_idx = blockDim.x * blockIdx.x + threadIdx.x;
-	if (ray_idx >= num_rays) return;
+	const int path_idx = blockDim.x * blockIdx.x + threadIdx.x;
+	if (path_idx >= num_paths) return;
 
-	clr_rec& crec = clrs[ray_idx];
-	if (crec.done) return; // nothing more to do
+	if (paths.done[path_idx]) return;
 
-	ray& r = rays[ray_idx];
-	const cu_hit hit(hits[ray_idx]);
+	const ray r(
+		make_float3(paths.oxs[path_idx], paths.oys[path_idx], paths.ozs[path_idx]),
+		make_float3(paths.dxs[path_idx], paths.dys[path_idx], paths.dzs[path_idx]));
+	const cu_hit hit(
+		paths.hit_ts[path_idx],
+		paths.hit_faces[path_idx]
+	);
 
 	if (hit.hit_face == NO_HIT) {
 		// no intersection with spheres, return sky color
-		crec.done = true;
-		crec.color *= (s.pdf_value(r.origin, r.direction) > 0) ? s.clr : make_float3(0);
+		paths.done[path_idx] = true;
+		const bool is_sun_hit = s.pdf_value(r.origin, r.direction) > 0;
+		paths.cxs[path_idx] *= is_sun_hit ? s.clr.x : 0;
+		paths.cys[path_idx] *= is_sun_hit ? s.clr.y : 0;
+		paths.czs[path_idx] *= is_sun_hit ? s.clr.z : 0;
 		return;
 	}
 
@@ -79,20 +91,28 @@ __global__ void simple_color(ray* rays, const uint num_rays, const cu_hit* hits,
 	mixture_pdf p(&plight, &scatter_pdf);
 
 	curandStatePhilox4_32_10_t lseed;
-	curand_init(0, ray_idx / 64, (ray_idx % 64), &lseed);
+	curand_init(0, path_idx / spp, (path_idx % spp), &lseed);
 	const float3 scattered(p.generate(&lseed));
 	const float pdf_val = p.value(scattered);
 	if (pdf_val > 0) {
 		const float scattering_pdf = fmaxf(0, dot(hit_n, scattered) / M_PI);
 
-		r.origin = hit_p;
-		r.direction = scattered;
-		crec.color *= albedo*scattering_pdf / pdf_val;
-		crec.done = false;
+		paths.oxs[path_idx] = hit_p.x;
+		paths.oys[path_idx] = hit_p.y;
+		paths.ozs[path_idx] = hit_p.z;
+		paths.dxs[path_idx] = scattered.x;
+		paths.dys[path_idx] = scattered.y;
+		paths.dzs[path_idx] = scattered.z;
+		paths.cxs[path_idx] *= albedo.x*scattering_pdf / pdf_val;
+		paths.cys[path_idx] *= albedo.y*scattering_pdf / pdf_val;
+		paths.czs[path_idx] *= albedo.z*scattering_pdf / pdf_val;
+		paths.done[path_idx] = false; // is it really needed ?
 	}
 	else {
-		crec.color = make_float3(0);
-		crec.done = true;
+		paths.cxs[path_idx] = 0;
+		paths.cys[path_idx] = 0;
+		paths.czs[path_idx] = 0;
+		paths.done[path_idx] = true;
 	}
 }
 
@@ -192,6 +212,89 @@ void display_image(clr_rec *clrs, const uint nx, const uint ny, const uint spp) 
 	delete[] pixels;
 }
 
+void init_paths(paths &p, const ray *rays, const uint num_rays) {
+	float *temp = new float[num_rays];
+
+	// ray.origin
+	gpuErrchk(cudaMalloc((void**)&p.oxs, num_rays * sizeof(float)));
+	gpuErrchk(cudaMalloc((void**)&p.oys, num_rays * sizeof(float)));
+	gpuErrchk(cudaMalloc((void**)&p.ozs, num_rays * sizeof(float)));
+	// ray.direction
+	gpuErrchk(cudaMalloc((void**)&p.dxs, num_rays * sizeof(float)));
+	gpuErrchk(cudaMalloc((void**)&p.dys, num_rays * sizeof(float)));
+	gpuErrchk(cudaMalloc((void**)&p.dzs, num_rays * sizeof(float)));
+	// color
+	gpuErrchk(cudaMalloc((void**)&p.cxs, num_rays * sizeof(float)));
+	gpuErrchk(cudaMalloc((void**)&p.cys, num_rays * sizeof(float)));
+	gpuErrchk(cudaMalloc((void**)&p.czs, num_rays * sizeof(float)));
+	// hit.face
+	gpuErrchk(cudaMalloc((void**)&p.hit_faces, num_rays * sizeof(unsigned char)));
+	// hit.t
+	gpuErrchk(cudaMalloc((void**)&p.hit_ts, num_rays * sizeof(float)));
+	// done
+	gpuErrchk(cudaMalloc((void**)&p.done, num_rays * sizeof(bool)));
+
+	// copy ray.origin
+	for (uint i = 0; i < num_rays; i++) temp[i] = rays[i].origin.x;
+	gpuErrchk(cudaMemcpyAsync(p.oxs, temp, num_rays * sizeof(float), cudaMemcpyHostToDevice));
+	for (uint i = 0; i < num_rays; i++) temp[i] = rays[i].origin.y;
+	gpuErrchk(cudaMemcpyAsync(p.oys, temp, num_rays * sizeof(float), cudaMemcpyHostToDevice));
+	for (uint i = 0; i < num_rays; i++) temp[i] = rays[i].origin.z;
+	gpuErrchk(cudaMemcpyAsync(p.ozs, temp, num_rays * sizeof(float), cudaMemcpyHostToDevice));
+	// copy ray.direction
+	for (uint i = 0; i < num_rays; i++) temp[i] = rays[i].direction.x;
+	gpuErrchk(cudaMemcpyAsync(p.dxs, temp, num_rays * sizeof(float), cudaMemcpyHostToDevice));
+	for (uint i = 0; i < num_rays; i++) temp[i] = rays[i].direction.y;
+	gpuErrchk(cudaMemcpyAsync(p.dys, temp, num_rays * sizeof(float), cudaMemcpyHostToDevice));
+	for (uint i = 0; i < num_rays; i++) temp[i] = rays[i].direction.z;
+	gpuErrchk(cudaMemcpyAsync(p.dzs, temp, num_rays * sizeof(float), cudaMemcpyHostToDevice));
+	// init colors to 1 (should be done in a kernel)
+	for (uint i = 0; i < num_rays; i++) temp[i] = 1;
+	gpuErrchk(cudaMemcpyAsync(p.cxs, temp, num_rays * sizeof(float), cudaMemcpyHostToDevice));
+	gpuErrchk(cudaMemcpyAsync(p.cys, temp, num_rays * sizeof(float), cudaMemcpyHostToDevice));
+	gpuErrchk(cudaMemcpyAsync(p.czs, temp, num_rays * sizeof(float), cudaMemcpyHostToDevice));
+	// set done to false
+	gpuErrchk(cudaMemset(p.done, 0, num_rays * sizeof(bool)));
+
+	delete[] temp;
+}
+
+void copyClrsToHost(const paths &p, clr_rec *clrs, const uint num_rays) {
+	float *temp = new float[num_rays];
+	bool *done = new bool[num_rays];
+	gpuErrchk(cudaMemcpy(temp, p.cxs, num_rays * sizeof(float), cudaMemcpyDeviceToHost));
+	for (uint i = 0; i < num_rays; i++) clrs[i].color.x = temp[i];
+	gpuErrchk(cudaMemcpy(temp, p.cys, num_rays * sizeof(float), cudaMemcpyDeviceToHost));
+	for (uint i = 0; i < num_rays; i++) clrs[i].color.y = temp[i];
+	gpuErrchk(cudaMemcpy(temp, p.czs, num_rays * sizeof(float), cudaMemcpyDeviceToHost));
+	for (uint i = 0; i < num_rays; i++) clrs[i].color.z = temp[i];
+	gpuErrchk(cudaMemcpy(done, p.done, num_rays * sizeof(bool), cudaMemcpyDeviceToHost));
+	for (uint i = 0; i < num_rays; i++) clrs[i].done = done[i];
+
+	delete[] temp;
+	delete[] done;
+}
+
+void releasePaths(const paths &p) {
+	// ray.origin
+	gpuErrchk(cudaFree(p.oxs));
+	gpuErrchk(cudaFree(p.oys));
+	gpuErrchk(cudaFree(p.ozs));
+	// ray.direction
+	gpuErrchk(cudaFree(p.dxs));
+	gpuErrchk(cudaFree(p.dys));
+	gpuErrchk(cudaFree(p.dzs));
+	// color
+	gpuErrchk(cudaFree(p.cxs));
+	gpuErrchk(cudaFree(p.cys));
+	gpuErrchk(cudaFree(p.czs));
+	// hit
+	gpuErrchk(cudaFree(p.hit_faces));
+	gpuErrchk(cudaFree(p.hit_ts));
+	// done
+	gpuErrchk(cudaFree(p.done));
+}
+
 int main(int argc, char** argv) {
 	options o;
 	if (!parse_args(o, argc, argv)) return;
@@ -219,20 +322,15 @@ int main(int argc, char** argv) {
 
 	// allocate all samples
 	ray* rays = new ray[num_rays];
-	clr_rec* clrs = new clr_rec[num_rays];
-	// allocate buffers on device
-	ray* d_rays = NULL;
-	gpuErrchk(cudaMalloc((void **)&d_rays, num_rays * sizeof(ray)));
-	cu_hit* d_hits = NULL;
-	gpuErrchk(cudaMalloc((void **)&d_hits, num_rays * sizeof(cu_hit)));
-	clr_rec* d_clrs = NULL;
-	gpuErrchk(cudaMalloc((void **)&d_clrs, num_rays * sizeof(clr_rec)));
 
 	// start by generating all primary rays
 	generate_rays(rays, c, nx, ny, spp);
 
-	gpuErrchk(cudaMemcpyAsync(d_clrs, clrs, num_rays * sizeof(clr_rec), cudaMemcpyHostToDevice));
-	gpuErrchk(cudaMemcpyAsync(d_rays, rays, num_rays * sizeof(ray), cudaMemcpyHostToDevice));
+	// prepare paths
+	paths p;
+	init_paths(p, rays, num_rays);
+
+	delete[] rays;
 
 	cudaEvent_t hit_start, hit_done, color_done, iter_done;
 	if (o.kernel_perf) {
@@ -253,14 +351,14 @@ int main(int argc, char** argv) {
 			const uint rays_per_strip = num_rays / o.num_strips;
 			const uint blocksPerGrid = ceilf(rays_per_strip / threadsPerBlock);
 			for (uint j = 0; j < o.num_strips; j++) {
-				hit_scene << <blocksPerGrid, threadsPerBlock, 0 >> > (d_rays, rays_per_strip*j, rays_per_strip*(j+1), d_heightmap, model->size, d_hits);
+				hit_scene <<<blocksPerGrid, threadsPerBlock, 0 >>> (p, rays_per_strip*j, rays_per_strip*(j+1), d_heightmap, model->size);
 			}
 		}
 		gpuErrchk(cudaPeekAtLastError());
 		if (o.kernel_perf) gpuErrchk(cudaEventRecord(hit_done));
 		{
 			const uint blocksPerGrid = (num_rays + threadsPerBlock - 1) / threadsPerBlock;
-			simple_color << <blocksPerGrid, threadsPerBlock, 0 >> > (d_rays, num_rays, d_hits, d_clrs, i, albedo, *s);
+			simple_color <<<blocksPerGrid, threadsPerBlock, 0 >>> (p, num_rays, i, albedo, *s, spp);
 		}
 		gpuErrchk(cudaPeekAtLastError());
 		if (o.kernel_perf) gpuErrchk(cudaEventRecord(color_done));
@@ -283,11 +381,11 @@ int main(int argc, char** argv) {
 	std::cout << "total duration " << (total_duration_ms / 1000.0) << " seconds" << std::endl;
 	std::cout << "  " << sscale(max_depth*num_rays*1000.0 / total_duration_ms) << " rays/s" << std::endl;
 
-	gpuErrchk(cudaMemcpy(clrs, d_clrs, num_rays * sizeof(clr_rec), cudaMemcpyDeviceToHost));
+	// copy colors to cpu
+	clr_rec *clrs = new clr_rec[num_rays];
+	copyClrsToHost(p, clrs, num_rays);
 
-	gpuErrchk(cudaFree(d_rays));
-	gpuErrchk(cudaFree(d_hits));
-	gpuErrchk(cudaFree(d_clrs));
+	releasePaths(p);
 
 	if (o.kernel_perf) {
 		if (hit_duration_ms > 0) {
@@ -303,7 +401,6 @@ int main(int argc, char** argv) {
 	if (o.show_image) display_image(clrs, nx, ny, spp);
 
 	delete[] clrs;
-	delete[] rays;
 
     return 0;
 }
