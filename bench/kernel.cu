@@ -326,6 +326,7 @@ int main(int argc, char** argv) {
 	gpuErrchk(cudaMemcpy(d_heightmap, model->heightmap, model->size.x*model->size.z * sizeof(unsigned char), cudaMemcpyHostToDevice));
 
 	// allocate all samples
+	const clock_t setup_start = clock();
 	ray* rays = new ray[num_rays];
 
 	// start by generating all primary rays
@@ -336,15 +337,13 @@ int main(int argc, char** argv) {
 	init_paths(p, rays, num_rays);
 
 	delete[] rays;
+	std::cout << "setup " << (clock() - setup_start) / 1000.0 << " seconds" << std::endl;
 
-	cudaEvent_t hit_start, hit_done, color_done, iter_done;
+	cudaEvent_t hit_start, hit_done, color_done;
 	if (o.kernel_perf) {
 		gpuErrchk(cudaEventCreate(&hit_start));
 		gpuErrchk(cudaEventCreate(&hit_done));
 		gpuErrchk(cudaEventCreate(&color_done));
-	}
-	else {
-		gpuErrchk(cudaEventCreate(&iter_done));
 	}
 	float hit_duration_ms = 0;
 	float color_duration_ms = 0;
@@ -367,7 +366,6 @@ int main(int argc, char** argv) {
 		}
 		gpuErrchk(cudaPeekAtLastError());
 		if (o.kernel_perf) gpuErrchk(cudaEventRecord(color_done));
-		if (!o.kernel_perf)	gpuErrchk(cudaEventRecord(iter_done));
 
 		if (o.kernel_perf) {
 			gpuErrchk(cudaEventSynchronize(color_done));
@@ -378,10 +376,10 @@ int main(int argc, char** argv) {
 			gpuErrchk(cudaEventElapsedTime(&duration_ms, hit_done, color_done));
 			color_duration_ms += duration_ms;
 			if (o.per_iter_perf && duration_ms > 0) std::cout << " simple_color " << sscale(num_rays*1000.0 / duration_ms) << " rays/s" << std::endl;
-		} else {
-			gpuErrchk(cudaEventSynchronize(iter_done));
 		}
 	}
+	gpuErrchk(cudaDeviceSynchronize());
+
 	const float total_duration_ms = clock() - start;
 	std::cout << "total duration " << (total_duration_ms / 1000.0) << " seconds" << std::endl;
 	std::cout << "  " << sscale(max_depth*num_rays*1000.0 / total_duration_ms) << " rays/s" << std::endl;
